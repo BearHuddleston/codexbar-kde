@@ -1,17 +1,86 @@
+<div align="center">
+
+<img src="assets/codexbar-kde.svg" alt="CodexBar KDE logo" width="96" height="96">
+
 # CodexBar KDE
 
-Local PyQt6 dashboard for AI subscription usage on KDE/Linux, built on top of the [CodexBar](https://codexbar.app) CLI (`codexbar usage --format json`). This is an independent companion app — not the official CodexBar macOS app — in the same spirit as other unofficial Linux integrations (codexbar-waybar, KodexBar, Codexbar GNOME).
+**A local PyQt6 dashboard + tray app for AI subscription usage on KDE/Linux**
 
-Privacy model:
+Built on top of the [CodexBar](https://codexbar.app) CLI (`codexbar usage --format json`).
+All providers together, clear meters, history charts — no fragmented single-provider widgets.
 
-- Calls only `/usr/bin/codexbar usage --format json --json-only --pretty` by default.
-- The Codex reset-credit redeem button additionally reads the OAuth token from `~/.codex/auth.json` (written by `codex login`) and POSTs to `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume` — the same endpoint the official Codex desktop/VS Code extension uses. It only spends credits OpenAI granted to the account; a confirmation dialog is required and nothing is redeemed automatically.
-- Does not read provider token/cookie files directly.
-- Does not store credentials.
-- Local cost/log scanning is not used.
-- Account identity can appear in the tray tooltip because the user explicitly asked to display meaningful fields from their own `codexbar usage` output.
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![PyQt6](https://img.shields.io/badge/UI-PyQt6-41CD52?logo=qt&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-KDE%20Plasma%20%2F%20Linux-1D99F3?logo=kde&logoColor=white)
+![Privacy](https://img.shields.io/badge/network-local--only*-2ea44f)
 
-Run:
+<sub>*The optional Codex reset-credit redeem button is the single, user-confirmed exception — see [Privacy model](#privacy-model).</sub>
+
+</div>
+
+> This is an independent companion app — **not** the official CodexBar macOS app — in the
+> same spirit as other unofficial Linux integrations (codexbar-waybar, KodexBar, Codexbar GNOME).
+
+---
+
+## Screenshots
+
+*Rendered with synthetic demo data via [`scripts/make_screenshots.py`](scripts/make_screenshots.py).*
+
+### Overview
+Per-provider sections in CodexBar menu style: `N% left`, reset countdowns, thin
+provider-accent meters, pace notes, credits — plus a **Codex reset credits** panel
+with a one-click *Redeem next* button for the credit closest to expiring.
+
+![Overview view](docs/screenshots/overview.png)
+
+### History
+Daily peak-usage bar chart (last 30 days) per provider window, teal/accent bars
+like the CodexBar History widget.
+
+![History view](docs/screenshots/history.png)
+
+### Burn-down
+Remaining budget vs a dashed ideal steady-burn line for the active window, like
+the CodexBar Burn Down widget.
+
+![Burn-down view](docs/screenshots/burndown.png)
+
+### Details
+Monospace compact dump of every meaningful `codexbar usage` field.
+
+![Details view](docs/screenshots/details.png)
+
+---
+
+## Features
+
+- **Flat dark CodexBar-inspired shell** — sidebar navigation, hairline separators,
+  thin 6px meters, no heavy cards (codexbar.app design language).
+- **Four statistic views** (Overview / History / Burn-down / Details), each also
+  reachable from the tray *Views* submenu.
+- **System tray icon** with a rich plain-text tooltip:
+  - Nerd Font / Font Awesome glyphs when available locally (dashboard, check,
+    warning, user, shield, clock/calendar, bolt, credit-card, refresh).
+  - Provider count, divider line, peak usage, unicode usage bars, reset
+    descriptions, pace, credits, and provider errors.
+  - Identical reset credits grouped into one line
+    (`Full reset (Weekly + 5 hr) ×4 · next expires …`).
+  - `Updated:` shown as a relative age (`just now`, `25m ago`) instead of a raw
+    ISO timestamp.
+  - Low-value raw JSON omitted: empty arrays, duplicate provider IDs,
+    reset-credit IDs, boilerplate descriptions, grant dates, reset types, null
+    tertiary windows, raw window-minute values.
+  - Click the tray icon to open the dashboard; right-click for Open / Refresh / Quit.
+- **Usage history** sampled on every refresh into
+  `~/.local/state/codexbar-kde/history.jsonl` (JSONL, pruned to 60 days, corrupt
+  lines skipped). Charts fill in as history accrues.
+- **Resilient**: provider errors stay inline in Overview without hiding healthy
+  providers.
+
+## Usage
+
+Run the dashboard (window + tray):
 
 ```sh
 codexbar-kde
@@ -23,31 +92,62 @@ Privacy-safe terminal summary:
 codexbar-kde --once
 ```
 
-GUI smoke test:
+GUI smoke test (offscreen render of all views):
 
 ```sh
 QT_QPA_PLATFORM=offscreen codexbar-kde --test-render
 ```
 
-UI notes:
+Useful flags:
 
-- CodexBar-inspired flat dark shell (codexbar.app design language): sidebar navigation, hairline separators, thin 6px meters — no heavy cards.
-- Four statistic views, also reachable from the tray "Views" submenu:
-  - **Overview** — per-provider sections in CodexBar menu style: `N% left`, reset countdowns, thin provider-accent meters, pace notes, credits. A **Codex reset credits** panel at the top lists banked credits sorted by expiry and offers a one-click **Redeem next (expires in Xd)** button for the credit closest to expiring (confirmation dialog, then automatic usage refresh).
-  - **History** — daily peak-usage bar chart (last 30 days) per provider window, teal/accent bars like the CodexBar History widget.
-  - **Burn-down** — remaining budget vs a dashed ideal steady-burn line for the active window, like the CodexBar Burn Down widget.
-  - **Details** — monospace compact dump of every meaningful `codexbar usage` field.
-- Usage history is sampled on every refresh into `~/.local/state/codexbar-kde/history.jsonl` (JSONL, pruned to 60 days, corrupt lines skipped). Charts fill in as history accrues.
-- Provider errors stay inline in Overview without hiding healthy providers.
+| Flag | Effect |
+| --- | --- |
+| `--codexbar-bin PATH` | Path to the `codexbar` CLI (default `/usr/bin/codexbar`) |
+| `--refresh-seconds N` | Auto-refresh interval (default 120, min 30) |
+| `--no-tray` | Plain window only, no system tray icon |
+| `--once` | Print a text summary and exit |
+| `--test-render` | Build the UI offscreen once and exit |
 
-Tray hover behavior:
+## Privacy model
 
-- KDE/QSystemTrayIcon tooltips are still plain text, not full custom HTML/CSS popovers.
-- The tooltip uses Nerd Font / Font Awesome glyphs when available locally: dashboard, check, warning, user, shield, clock/calendar, bolt, credit-card, and refresh icons.
-- This machine has Nerd Font glyph fallback via `FantasqueSansM Nerd Font`, verified with fontconfig for the glyph codepoints used.
-- The tooltip also uses provider count, divider line, peak usage, unicode usage bars, reset descriptions, pace, credits, and provider errors.
-- Low-value raw JSON is omitted: empty arrays, duplicate provider IDs, reset-credit IDs, boilerplate descriptions, grant dates, reset types, null tertiary windows, and raw window-minute values.
-- Identical reset credits are grouped into one line (`Full reset (Weekly + 5 hr) ×4 · next expires …`).
-- `Updated:` shows a relative age (`just now`, `25m ago`) instead of a raw ISO timestamp.
-- Click the tray icon to open the full dashboard.
-- Right-click the tray icon for Open / Refresh / Quit.
+- Calls only `/usr/bin/codexbar usage --format json --json-only --pretty` by default.
+- The Codex reset-credit **redeem** button additionally reads the OAuth token from
+  `~/.codex/auth.json` (written by `codex login`) and POSTs to
+  `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume` — the same
+  endpoint the official Codex desktop/VS Code extension uses. It only spends credits
+  OpenAI granted to the account; a confirmation dialog is required and nothing is
+  redeemed automatically.
+- Does **not** read provider token/cookie files directly.
+- Does **not** store credentials.
+- Local cost/log scanning is **not** used.
+- Account identity can appear in the tray tooltip because the user explicitly asked
+  to display meaningful fields from their own `codexbar usage` output.
+
+## Notes on tray tooltips
+
+KDE/QSystemTrayIcon tooltips are plain text, not full custom HTML/CSS popovers.
+Glyph icons rely on a locally installed Nerd Font fallback (verified here with
+`FantasqueSansM Nerd Font` via fontconfig for the codepoints used); without one,
+the glyphs degrade to unknown-character boxes but the text stays readable.
+
+## Development
+
+```sh
+# Run tests (stdlib unittest; offscreen so no display is needed)
+QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m unittest discover -s tests -v
+
+# Regenerate the README screenshots (synthetic data only — nothing personal leaks)
+QT_QPA_PLATFORM=offscreen python scripts/make_screenshots.py
+```
+
+Layout:
+
+```
+src/codexbar_kde/
+  app.py      # entry point, dashboard window, tray controller, tooltip builder
+  model.py    # payload normalization into ProviderUsage / WindowUsage
+  views.py    # Overview / History / Burn-down / Details widgets + theme
+  history.py  # JSONL history store, daily peaks, burn-down series
+  reset.py    # Codex reset-credit listing and redeem call
+tests/        # unittest suite (model, history, reset, app, UI smoke)
+```
