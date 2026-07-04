@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CodexBar KDE
+Comment=Local AI subscription usage dashboard powered by CodexBar CLI
+Exec=codexbar-kde
+Icon=codexbar-kde
+Terminal=false
+Categories=System;Monitor;Qt;
+Keywords=CodexBar;Codex;Claude;AI;Usage;Quota;Dashboard;
+StartupNotify=true
+StartupWMClass=codexbar-kde

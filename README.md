@@ -78,6 +78,33 @@ Monospace compact dump of every meaningful `codexbar usage` field.
 - **Resilient**: provider errors stay inline in Overview without hiding healthy
   providers.
 
+## Install
+
+**Option A — AppImage** (bundles Python + PyQt6; still needs `codexbar` on the host):
+
+```sh
+# download CodexBar_KDE-x86_64.AppImage from the Releases page, then:
+chmod +x CodexBar_KDE-x86_64.AppImage
+./CodexBar_KDE-x86_64.AppImage
+```
+
+**Option B — pip / pipx** (uses your system Qt platform plugins via the PyQt6 wheel):
+
+```sh
+pipx install git+https://github.com/BearHuddleston/codexbar-kde.git
+```
+
+Optional desktop integration (launcher entry + icon):
+
+```sh
+install -Dm644 packaging/codexbar-kde.desktop ~/.local/share/applications/codexbar-kde.desktop
+install -Dm644 assets/codexbar-kde.svg ~/.local/share/icons/hicolor/scalable/apps/codexbar-kde.svg
+kbuildsycoca6 --noincremental   # KDE: refresh the launcher cache
+```
+
+Both options require the [CodexBar CLI](https://codexbar.app) at `/usr/bin/codexbar`
+(or pass `--codexbar-bin PATH`).
+
 ## Usage
 
 Run the dashboard (window + tray):
@@ -138,7 +165,15 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m unittest discover -s tests -v
 
 # Regenerate the README screenshots (synthetic data only — nothing personal leaks)
 QT_QPA_PLATFORM=offscreen python scripts/make_screenshots.py
+
+# Build a self-contained AppImage (bundles Python + PyQt6, ~74 MB)
+bash scripts/build_appimage.sh
+# → dist/CodexBar_KDE-x86_64.AppImage
 ```
+
+The AppImage bundles the Python runtime and PyQt6 but **not** the `codexbar`
+CLI itself — it still expects `/usr/bin/codexbar` on the host (or pass
+`--codexbar-bin PATH`).
 
 Layout:
 

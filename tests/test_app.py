@@ -16,6 +16,15 @@ from codexbar_kde.app import (
 
 
 class AppTests(unittest.TestCase):
+    def test_version_flag_reports_package_version(self):
+        import codexbar_kde
+        from codexbar_kde.app import parse_args
+
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertRegex(codexbar_kde.__version__, r"^\d+\.\d+\.\d+$")
+
     def test_build_codexbar_command_uses_absolute_binary_and_json_only(self):
         self.assertEqual(
             build_codexbar_command("/usr/bin/codexbar"),

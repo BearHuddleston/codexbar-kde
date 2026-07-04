@@ -996,7 +996,10 @@ def run_test_render(codexbar_bin: str) -> int:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    from . import __version__
+
     parser = argparse.ArgumentParser(description="Local CodexBar usage dashboard for KDE/Linux")
+    parser.add_argument("--version", action="version", version=f"codexbar-kde {__version__}")
     parser.add_argument("--codexbar-bin", default=DEFAULT_CODEXBAR, help="Path to codexbar CLI")
     parser.add_argument("--refresh-seconds", type=int, default=DEFAULT_REFRESH_SECONDS, help="Auto-refresh interval")
     parser.add_argument("--once", action="store_true", help="Print a privacy-safe text summary and exit")
