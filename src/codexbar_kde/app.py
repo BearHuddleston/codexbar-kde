@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .history import HistoryStore, burn_down_series, daily_peaks
+from .history import HistoryStore, Sample, burn_down_series, daily_peaks
 from .model import (
     ProviderUsage,
     WindowUsage as WindowUsage,
@@ -591,15 +591,43 @@ def build_tray_tooltip(providers: Iterable[ProviderUsage], error: str = "", raw_
 
 class UsageWorker(QThread):
     finished_with_result = pyqtSignal(object, str, object)
+    history_updated = pyqtSignal(object, bool)
 
-    def __init__(self, codexbar_bin: str, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        codexbar_bin: str,
+        parent: QObject | None = None,
+        *,
+        history_store: HistoryStore | None = None,
+    ) -> None:
         super().__init__(parent)
         self.codexbar_bin = codexbar_bin
+        self.history_store = history_store
         self._cancel_event = threading.Event()
 
     def cancel(self) -> None:
         self.requestInterruption()
         self._cancel_event.set()
+
+    def _record_history(self, providers: list[ProviderUsage]) -> list[Sample]:
+        if self.history_store is None or self._cancel_event.is_set():
+            return []
+        try:
+            return self.history_store.record(providers)
+        except OSError:
+            return []
+
+    def _update_history(self, recorded: list[Sample]) -> None:
+        if self.history_store is None or self._cancel_event.is_set():
+            return
+        try:
+            pruned = self.history_store.prune_if_due(days=60)
+        except OSError:
+            return
+        if pruned is not None:
+            self.history_updated.emit(pruned, True)
+        elif recorded:
+            self.history_updated.emit(recorded, False)
 
     def run(self) -> None:
         try:
@@ -608,11 +636,14 @@ class UsageWorker(QThread):
                 cancel_requested=self._cancel_event.is_set,
             )
             providers = normalize_payload(raw_payload)
+            recorded = self._record_history(providers)
             self.finished_with_result.emit(providers, "", raw_payload)
+            self._update_history(recorded)
         except _CommandCancelled:
             return
         except Exception as exc:  # GUI boundary: show sanitized concise error
             self.finished_with_result.emit([], redact_text(str(exc)), None)
+            self._update_history([])
 
 
 class RedeemWorker(QThread):
@@ -687,6 +718,7 @@ class DashboardWindow(QMainWindow):
         self.redeem_worker: RedeemWorker | None = None
         self._shutting_down = False
         self.history = history_store or HistoryStore()
+        self._history_samples: list[Sample] = []
         self.providers: list[ProviderUsage] = []
         self.raw_payload: object | None = None
         self.setWindowTitle("CodexBar KDE")
@@ -950,7 +982,7 @@ class DashboardWindow(QMainWindow):
             self.view_history.set_series([], TEAL, "")
             return
         provider_key, window_key = selection
-        samples = self.history.load()
+        samples = self._history_samples
         series = daily_peaks(samples, provider=provider_key, window_key=window_key, days=30)
         active_days = [p for p in series if p.value > 0]
         if active_days:
@@ -972,7 +1004,7 @@ class DashboardWindow(QMainWindow):
             return
         samples = [
             (s.ts, s.windows[window_key])
-            for s in self.history.load()
+            for s in self._history_samples
             if s.provider == provider_key and window_key in s.windows
         ]
         burn = burn_down_series(samples, window_minutes=window_minutes, resets_at=resets_at)
@@ -994,21 +1026,34 @@ class DashboardWindow(QMainWindow):
         self.refresh_button.setEnabled(False)
         self.status_label.setText("Refreshing…")
         self.status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent;")
-        self.worker = UsageWorker(self.codexbar_bin, self)
+        self.worker = UsageWorker(
+            self.codexbar_bin,
+            self,
+            history_store=self.history,
+        )
         self.worker.finished_with_result.connect(self._refresh_finished)
+        self.worker.history_updated.connect(self._history_worker_updated)
         self.worker.finished.connect(self._usage_worker_stopped)
         self.worker.start()
 
     def _refresh_finished(self, providers: object, error: str, raw_payload: object) -> None:
         self.refresh_button.setEnabled(True)
         typed_providers = providers if isinstance(providers, list) else []
-        if typed_providers:
-            try:
-                self.history.record(typed_providers)
-                self.history.prune(days=60)
-            except OSError:
-                pass  # history is best-effort; never break the UI over disk issues
         self.set_providers(typed_providers, error, raw_payload)
+
+    def _history_worker_updated(self, samples: object, replace: bool) -> None:
+        typed_samples = (
+            [sample for sample in samples if isinstance(sample, Sample)]
+            if isinstance(samples, list)
+            else []
+        )
+        if replace:
+            self._history_samples = typed_samples
+        else:
+            self._history_samples.extend(typed_samples)
+            self._history_samples.sort(key=lambda sample: sample.ts)
+        self._update_history_chart()
+        self._update_burndown_chart()
 
     def _usage_worker_stopped(self) -> None:
         worker = self.worker

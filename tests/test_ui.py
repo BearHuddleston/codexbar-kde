@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from PyQt6.QtCore import QCoreApplication, QEvent
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from codexbar_kde.app import DashboardWindow, RedeemWorker, UsageWorker
+from codexbar_kde.history import HistoryStore
 from codexbar_kde.model import normalize_payload
 
 
@@ -71,8 +73,17 @@ class UiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.qapp = _app()
 
+    def setUp(self):
+        self.history_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.history_tmp.cleanup)
+        self.history = HistoryStore(Path(self.history_tmp.name) / "history.jsonl")
+
     def _window(self):
-        window = DashboardWindow(codexbar_bin="/usr/bin/codexbar", refresh_seconds=3600)
+        window = DashboardWindow(
+            codexbar_bin="/usr/bin/codexbar",
+            refresh_seconds=3600,
+            history_store=self.history,
+        )
         providers = normalize_payload(PAYLOAD)
         window.set_providers(providers, raw_payload=PAYLOAD)
         return window
@@ -145,11 +156,66 @@ class UiTests(unittest.TestCase):
         self.assertFalse(panel.redeem_button.isEnabled())
 
     def test_reset_panel_hidden_without_codex_credits(self):
-        window = DashboardWindow(codexbar_bin="/usr/bin/codexbar", refresh_seconds=3600)
+        window = DashboardWindow(
+            codexbar_bin="/usr/bin/codexbar",
+            refresh_seconds=3600,
+            history_store=self.history,
+        )
         payload = [{"provider": "claude", "source": "oauth", "usage": {"primary": {"usedPercent": 12}}}]
         window.set_providers(normalize_payload(payload), raw_payload=payload)
 
         self.assertFalse(window.view_overview.reset_panel.isVisibleTo(window.view_overview))
+
+    def test_usage_success_is_persisted_before_result_signal(self):
+        events = []
+        worker = UsageWorker(
+            "/usr/bin/codexbar",
+            history_store=self.history,
+        )
+        worker.finished_with_result.connect(
+            lambda *_: events.append("result")
+        )
+
+        def record(*args, **kwargs):
+            events.append("record")
+            return []
+
+        with (
+            patch("codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD),
+            patch.object(self.history, "record", side_effect=record),
+        ):
+            worker.run()
+
+        self.assertEqual(events[:2], ["record", "result"])
+
+    def test_refresh_updates_cached_history_off_the_gui_thread(self):
+        window = self._window()
+        main_thread = threading.get_ident()
+        record_threads = []
+        original_record = self.history.record
+
+        def recording(*args, **kwargs):
+            record_threads.append(threading.get_ident())
+            return original_record(*args, **kwargs)
+
+        with (
+            patch("codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD),
+            patch.object(self.history, "record", side_effect=recording),
+            patch.object(self.history, "prune", wraps=self.history.prune) as prune,
+            patch.object(self.history, "load", wraps=self.history.load) as load,
+        ):
+            window.refresh_now()
+            self.assertTrue(_wait_until(lambda: window.worker is None))
+            first_count = len(window._history_samples)
+            window.refresh_now()
+            self.assertTrue(_wait_until(lambda: window.worker is None))
+
+        self.assertGreater(first_count, 0)
+        self.assertEqual(len(window._history_samples), first_count * 2)
+        self.assertEqual(prune.call_count, 1)
+        self.assertEqual(load.call_count, 0)
+        self.assertTrue(record_threads)
+        self.assertTrue(all(thread_id != main_thread for thread_id in record_threads))
 
     def test_finished_usage_worker_is_released(self):
         window = self._window()

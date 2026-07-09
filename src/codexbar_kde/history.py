@@ -10,11 +10,16 @@ survives restarts without a database. Each line is one provider sample:
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
+import math
 import os
+import tempfile
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from .model import ProviderUsage, parse_iso_datetime
 
@@ -60,65 +65,198 @@ def _utc(value: dt.datetime) -> dt.datetime:
 class HistoryStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_history_path()
+        self._manage_parent_permissions = path is None or self.path == default_history_path()
+        self._thread_lock = threading.RLock()
+        self._next_prune_at: dt.datetime | None = None
 
-    def record(self, providers: Iterable[ProviderUsage], *, now: dt.datetime | None = None) -> None:
+    def _ensure_private_parent(self) -> None:
+        existed = self.path.parent.exists()
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not existed or self._manage_parent_permissions:
+            self.path.parent.chmod(0o700)
+
+    def _fsync_parent(self) -> None:
+        dir_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    @contextmanager
+    def _locked(self, *, exclusive: bool) -> Iterator[None]:
+        with self._thread_lock:
+            self._ensure_private_parent()
+            lock_path = self.path.with_name(f"{self.path.name}.lock")
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+                if self.path.exists():
+                    self.path.chmod(0o600)
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+
+    @staticmethod
+    def _serialize(sample: Sample) -> str:
+        return json.dumps(
+            {
+                "ts": sample.ts.isoformat(),
+                "provider": sample.provider,
+                "windows": sample.windows,
+            },
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _parse_record(data: object) -> Sample | None:
+        if not isinstance(data, dict):
+            return None
+        raw_ts = data.get("ts")
+        provider = data.get("provider")
+        raw_windows = data.get("windows")
+        if not isinstance(raw_ts, str) or not isinstance(provider, str):
+            return None
+        provider = provider.strip()
+        try:
+            ts = parse_iso_datetime(raw_ts)
+            if ts is not None:
+                ts = _utc(ts)
+        except (ValueError, OverflowError):
+            return None
+        if ts is None or not provider or not isinstance(raw_windows, dict):
+            return None
+        windows: dict[str, float] = {}
+        for key, raw_value in raw_windows.items():
+            if not isinstance(key, str) or not key or isinstance(raw_value, bool):
+                continue
+            try:
+                value = float(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(value) and 0.0 <= value <= 100.0:
+                windows[key] = value
+        if not windows:
+            return None
+        return Sample(ts=ts, provider=provider, windows=windows)
+
+    def record(
+        self,
+        providers: Iterable[ProviderUsage],
+        *,
+        now: dt.datetime | None = None,
+    ) -> list[Sample]:
         now = _utc(now or dt.datetime.now(dt.timezone.utc))
-        lines = []
+        samples: list[Sample] = []
         for provider in providers:
             if provider.error or not provider.windows:
                 continue
             windows = {w.key: w.used_percent for w in provider.windows}
-            lines.append(json.dumps({
-                "ts": now.isoformat(),
-                "provider": provider.provider,
-                "windows": windows,
-            }, ensure_ascii=False))
-        if not lines:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + "\n")
+            samples.append(Sample(ts=now, provider=provider.provider, windows=windows))
+        if not samples:
+            return []
+        payload = ("\n".join(self._serialize(sample) for sample in samples) + "\n").encode("utf-8")
+        with self._locked(exclusive=True):
+            created = not self.path.exists()
+            fd = os.open(
+                self.path,
+                os.O_CREAT | os.O_APPEND | os.O_RDWR,
+                0o600,
+            )
+            try:
+                os.fchmod(fd, 0o600)
+                size = os.fstat(fd).st_size
+                prefix = b"\n" if size and os.pread(fd, 1, size - 1) != b"\n" else b""
+                with os.fdopen(fd, "ab") as fh:
+                    fd = -1
+                    fh.write(prefix + payload)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                if created:
+                    self._fsync_parent()
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+        return samples
 
-    def load(self) -> list[Sample]:
+    def _load_unlocked(self) -> list[Sample]:
         if not self.path.exists():
             return []
         samples: list[Sample] = []
-        with open(self.path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
+        with open(self.path, "rb") as fh:
+            for raw_line in fh:
+                try:
+                    line = raw_line.decode("utf-8").strip()
+                except UnicodeDecodeError:
+                    continue
                 if not line:
                     continue
                 try:
                     data = json.loads(line)
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, ValueError, RecursionError):
                     continue
-                ts = parse_iso_datetime(str(data.get("ts") or ""))
-                if ts is None or not isinstance(data.get("windows"), dict):
-                    continue
-                windows = {}
-                for key, value in data["windows"].items():
-                    try:
-                        windows[str(key)] = float(value)
-                    except (TypeError, ValueError):
-                        continue
-                samples.append(Sample(ts=ts, provider=str(data.get("provider") or ""), windows=windows))
-        samples.sort(key=lambda s: s.ts)
+                sample = self._parse_record(data)
+                if sample is not None:
+                    samples.append(sample)
+        samples.sort(key=lambda sample: sample.ts)
         return samples
 
-    def prune(self, *, days: int, now: dt.datetime | None = None) -> None:
+    def load(self) -> list[Sample]:
+        if not self.path.exists():
+            return []
+        with self._locked(exclusive=False):
+            return self._load_unlocked()
+
+    def prune(
+        self, *, days: int, now: dt.datetime | None = None
+    ) -> list[Sample]:
+        if days < 0:
+            raise ValueError("days must be non-negative")
         now = _utc(now or dt.datetime.now(dt.timezone.utc))
         cutoff = now - dt.timedelta(days=days)
-        samples = [s for s in self.load() if s.ts >= cutoff]
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".jsonl.tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            for sample in samples:
-                fh.write(json.dumps({
-                    "ts": sample.ts.isoformat(),
-                    "provider": sample.provider,
-                    "windows": sample.windows,
-                }, ensure_ascii=False) + "\n")
-        tmp.replace(self.path)
+        with self._locked(exclusive=True):
+            if not self.path.exists():
+                return []
+            samples = [sample for sample in self._load_unlocked() if sample.ts >= cutoff]
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+                dir=self.path.parent,
+            )
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fd = -1
+                    for sample in samples:
+                        fh.write(self._serialize(sample) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_name, self.path)
+                self._fsync_parent()
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+                try:
+                    os.unlink(tmp_name)
+                except FileNotFoundError:
+                    pass
+        return samples
+
+    def prune_if_due(
+        self,
+        *,
+        days: int,
+        now: dt.datetime | None = None,
+        interval: dt.timedelta = dt.timedelta(days=1),
+    ) -> list[Sample] | None:
+        now = _utc(now or dt.datetime.now(dt.timezone.utc))
+        with self._thread_lock:
+            if self._next_prune_at is not None and now < self._next_prune_at:
+                return None
+            samples = self.prune(days=days, now=now)
+            self._next_prune_at = now + interval
+            return samples
 
 
 def daily_peaks(samples: Iterable[Sample], *, provider: str, window_key: str,
