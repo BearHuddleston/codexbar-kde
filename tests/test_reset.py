@@ -69,6 +69,23 @@ class PickNextExpiringTests(unittest.TestCase):
         self.assertIsNotNone(credit)
         self.assertEqual(credit["id"], "future")
 
+    def test_overflowing_utc_conversion_is_ignored(self):
+        credit = pick_next_expiring([
+            {
+                "id": "overflow",
+                "status": "available",
+                "expires_at": "0001-01-01T00:00:00+23:59",
+            },
+            {
+                "id": "future",
+                "status": "available",
+                "expires_at": "2026-08-01T00:00:00Z",
+            },
+        ], now=NOW)
+
+        self.assertIsNotNone(credit)
+        self.assertEqual(credit.get("id") if credit else None, "future")
+
     def test_expiries_are_ordered_as_utc_instants(self):
         credit = pick_next_expiring([
             {"id": "later", "status": "available", "expires_at": "2026-07-10T00:00:00-10:00"},

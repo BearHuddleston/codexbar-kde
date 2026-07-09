@@ -192,11 +192,11 @@ def _parse_expiry(credit: dict[str, Any]) -> dt.datetime | None:
         return None
     try:
         parsed = dt.datetime.fromisoformat(expires.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
 
 
 def _expiry_key(credit: dict[str, Any]) -> tuple[int, dt.datetime]:
