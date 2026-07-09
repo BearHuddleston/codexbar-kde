@@ -46,15 +46,31 @@ def demo_payload() -> list[dict]:
             "version": "0.9.4",
             "credits": {"remaining": 0, "updatedAt": iso(NOW)},
             "pace": {
-                "primary": {"deltaPercent": -17, "expectedUsedPercent": 55, "willLastToReset": True},
-                "secondary": {"deltaPercent": -24, "expectedUsedPercent": 66, "willLastToReset": True},
+                "primary": {
+                    "deltaPercent": -17,
+                    "expectedUsedPercent": 55,
+                    "willLastToReset": True,
+                },
+                "secondary": {
+                    "deltaPercent": -24,
+                    "expectedUsedPercent": 66,
+                    "willLastToReset": True,
+                },
             },
             "usage": {
                 "updatedAt": iso(NOW),
-                "primary": {"label": "5h/session", "usedPercent": 38, "windowMinutes": 300,
-                            "resetsAt": iso(NOW + dt.timedelta(hours=2))},
-                "secondary": {"label": "weekly", "usedPercent": 42, "windowMinutes": 10080,
-                              "resetsAt": iso(NOW + dt.timedelta(days=3, hours=6))},
+                "primary": {
+                    "label": "5h/session",
+                    "usedPercent": 38,
+                    "windowMinutes": 300,
+                    "resetsAt": iso(NOW + dt.timedelta(hours=2)),
+                },
+                "secondary": {
+                    "label": "weekly",
+                    "usedPercent": 42,
+                    "windowMinutes": 10080,
+                    "resetsAt": iso(NOW + dt.timedelta(days=3, hours=6)),
+                },
                 "codexResetCredits": {
                     "availableCount": 3,
                     "credits": [
@@ -77,14 +93,26 @@ def demo_payload() -> list[dict]:
             "source": "oauth",
             "version": "1.2.0",
             "pace": {
-                "primary": {"deltaPercent": 6, "expectedUsedPercent": 60, "willLastToReset": True},
+                "primary": {
+                    "deltaPercent": 6,
+                    "expectedUsedPercent": 60,
+                    "willLastToReset": True,
+                },
             },
             "usage": {
                 "updatedAt": iso(NOW),
-                "primary": {"label": "5h/session", "usedPercent": 66, "windowMinutes": 300,
-                            "resetsAt": iso(NOW + dt.timedelta(hours=1, minutes=40))},
-                "secondary": {"label": "weekly", "usedPercent": 31, "windowMinutes": 10080,
-                              "resetsAt": iso(NOW + dt.timedelta(days=5, hours=2))},
+                "primary": {
+                    "label": "5h/session",
+                    "usedPercent": 66,
+                    "windowMinutes": 300,
+                    "resetsAt": iso(NOW + dt.timedelta(hours=1, minutes=40)),
+                },
+                "secondary": {
+                    "label": "weekly",
+                    "usedPercent": 31,
+                    "windowMinutes": 10080,
+                    "resetsAt": iso(NOW + dt.timedelta(days=5, hours=2)),
+                },
             },
         },
         {
@@ -93,8 +121,12 @@ def demo_payload() -> list[dict]:
             "version": "0.4.1",
             "usage": {
                 "updatedAt": iso(NOW),
-                "primary": {"label": "daily", "usedPercent": 12, "windowMinutes": 1440,
-                            "resetsAt": iso(NOW + dt.timedelta(hours=9))},
+                "primary": {
+                    "label": "daily",
+                    "usedPercent": 12,
+                    "windowMinutes": 1440,
+                    "resetsAt": iso(NOW + dt.timedelta(hours=9)),
+                },
             },
         },
         {
@@ -103,8 +135,12 @@ def demo_payload() -> list[dict]:
             "version": "2.1.0",
             "usage": {
                 "updatedAt": iso(NOW),
-                "primary": {"label": "monthly premium", "usedPercent": 91, "windowMinutes": 43200,
-                            "resetsAt": iso(NOW + dt.timedelta(days=11))},
+                "primary": {
+                    "label": "monthly premium",
+                    "usedPercent": 91,
+                    "windowMinutes": 43200,
+                    "resetsAt": iso(NOW + dt.timedelta(days=11)),
+                },
             },
         },
     ]
@@ -119,7 +155,9 @@ def seed_history(store: HistoryStore) -> None:
     lines: list[str] = []
 
     def add(ts: dt.datetime, provider: str, windows: dict[str, float]) -> None:
-        lines.append(json.dumps({"ts": ts.isoformat(), "provider": provider, "windows": windows}))
+        lines.append(
+            json.dumps({"ts": ts.isoformat(), "provider": provider, "windows": windows})
+        )
 
     # Daily peaks for the last 30 days (a couple of samples per day).
     for offset in range(30, 0, -1):
@@ -127,16 +165,40 @@ def seed_history(store: HistoryStore) -> None:
         wave = 0.5 + 0.5 * math.sin(offset / 4.5)
         for hour in (10, 15, 20):
             ts = day.replace(hour=hour, minute=0, second=0, microsecond=0)
-            add(ts, "codex", {
-                "primary": max(0.0, min(96.0, 25 + 60 * wave + random.uniform(-8, 8))),
-                "secondary": max(0.0, min(96.0, 20 + 45 * wave + random.uniform(-5, 5))),
-            })
-            add(ts, "claude", {
-                "primary": max(0.0, min(96.0, 35 + 50 * (1 - wave) + random.uniform(-8, 8))),
-                "secondary": max(0.0, min(96.0, 15 + 30 * (1 - wave) + random.uniform(-5, 5))),
-            })
-            add(ts, "gemini", {"primary": max(0.0, 5 + 18 * wave + random.uniform(-3, 3))})
-            add(ts, "copilot", {"primary": min(96.0, 60 + offset * -0.5 + 30 + random.uniform(-2, 2))})
+            add(
+                ts,
+                "codex",
+                {
+                    "primary": max(
+                        0.0, min(96.0, 25 + 60 * wave + random.uniform(-8, 8))
+                    ),
+                    "secondary": max(
+                        0.0, min(96.0, 20 + 45 * wave + random.uniform(-5, 5))
+                    ),
+                },
+            )
+            add(
+                ts,
+                "claude",
+                {
+                    "primary": max(
+                        0.0, min(96.0, 35 + 50 * (1 - wave) + random.uniform(-8, 8))
+                    ),
+                    "secondary": max(
+                        0.0, min(96.0, 15 + 30 * (1 - wave) + random.uniform(-5, 5))
+                    ),
+                },
+            )
+            add(
+                ts,
+                "gemini",
+                {"primary": max(0.0, 5 + 18 * wave + random.uniform(-3, 3))},
+            )
+            add(
+                ts,
+                "copilot",
+                {"primary": min(96.0, 60 + offset * -0.5 + 30 + random.uniform(-2, 2))},
+            )
 
     # Intra-window samples for the codex 5h burn-down (window started 3h ago).
     window_start = NOW + dt.timedelta(hours=2) - dt.timedelta(minutes=300)
@@ -166,15 +228,21 @@ def main() -> int:
         window.show()
         app.processEvents()
 
-        slugs = {"Overview": "overview", "History": "history",
-                 "Burn-down": "burndown", "Details": "details"}
+        slugs = {
+            "Overview": "overview",
+            "History": "history",
+            "Burn-down": "burndown",
+            "Details": "details",
+        }
         for name in window.view_names():
             window.show_view(name)
             app.processEvents()
             pixmap = window.grab()
             out = OUT_DIR / f"{slugs.get(name, name.lower())}.png"
             pixmap.save(str(out), "PNG")
-            print(f"wrote {out.relative_to(REPO_ROOT)} ({pixmap.width()}x{pixmap.height()})")
+            print(
+                f"wrote {out.relative_to(REPO_ROOT)} ({pixmap.width()}x{pixmap.height()})"
+            )
         window.close()
     return 0
 

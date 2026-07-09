@@ -78,7 +78,9 @@ def load_codex_auth(path: Path | None = None) -> tuple[str, str]:
     try:
         data = json.loads(path.read_text())
     except FileNotFoundError:
-        raise CodexAuthError(f"Codex auth file not found: {path} — run `codex login` first") from None
+        raise CodexAuthError(
+            f"Codex auth file not found: {path} — run `codex login` first"
+        ) from None
     except (OSError, json.JSONDecodeError) as exc:
         raise CodexAuthError(f"Codex auth file unreadable: {path}: {exc}") from None
     if not isinstance(data, dict):
@@ -86,19 +88,25 @@ def load_codex_auth(path: Path | None = None) -> tuple[str, str]:
     tokens = data.get("tokens")
     if not isinstance(tokens, dict):
         tokens = {}
-    token = _first_nonempty_string(
-        data.get("access_token"), tokens.get("access_token")
-    )
+    token = _first_nonempty_string(data.get("access_token"), tokens.get("access_token"))
     account_id = _first_nonempty_string(
         data.get("account_id"), tokens.get("account_id")
     )
     if token is None or account_id is None:
-        raise CodexAuthError(f"Codex auth file is missing access_token/account_id: {path}")
+        raise CodexAuthError(
+            f"Codex auth file is missing access_token/account_id: {path}"
+        )
     return token, account_id
 
 
-def _request(method: str, url: str, *, token: str, account_id: str,
-             body: dict[str, Any] | None = None) -> tuple[int, Any]:
+def _request(
+    method: str,
+    url: str,
+    *,
+    token: str,
+    account_id: str,
+    body: dict[str, Any] | None = None,
+) -> tuple[int, Any]:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, method=method, data=data)
     req.add_header("Authorization", f"Bearer {token}")
@@ -144,22 +152,31 @@ def _request(method: str, url: str, *, token: str, account_id: str,
         return status, raw
 
 
-def list_reset_credits(token: str, account_id: str, *, base: str = DEFAULT_BASE) -> dict[str, Any]:
+def list_reset_credits(
+    token: str, account_id: str, *, base: str = DEFAULT_BASE
+) -> dict[str, Any]:
     """Return {"credits": [...], "available_count": N} from the backend."""
-    status, payload = _request("GET", f"{base}/wham/rate-limit-reset-credits",
-                               token=token, account_id=account_id)
+    status, payload = _request(
+        "GET",
+        f"{base}/wham/rate-limit-reset-credits",
+        token=token,
+        account_id=account_id,
+    )
     if status != 200 or not isinstance(payload, dict):
         raise CodexResetError(f"listing reset credits failed (HTTP {status})")
     return payload
 
 
-def consume_reset_credit(token: str, account_id: str, credit_id: str, *,
-                         base: str = DEFAULT_BASE) -> dict[str, Any]:
+def consume_reset_credit(
+    token: str, account_id: str, credit_id: str, *, base: str = DEFAULT_BASE
+) -> dict[str, Any]:
     """Redeem one banked credit. Returns the consume response
     ({"code": "reset", "windows_reset": 1, "credit": {...}})."""
     status, payload = _request(
-        "POST", f"{base}/wham/rate-limit-reset-credits/consume",
-        token=token, account_id=account_id,
+        "POST",
+        f"{base}/wham/rate-limit-reset-credits/consume",
+        token=token,
+        account_id=account_id,
         body={"credit_id": credit_id, "redeem_request_id": str(uuid.uuid4())},
     )
     if status != 200 or not isinstance(payload, dict):
@@ -167,7 +184,9 @@ def consume_reset_credit(token: str, account_id: str, credit_id: str, *,
             detail = json.dumps(sanitize_structure(payload))[:300]
         else:
             detail = redact_text(str(payload))[:300]
-        raise CodexResetError(f"consuming reset credit failed (HTTP {status}): {detail}")
+        raise CodexResetError(
+            f"consuming reset credit failed (HTTP {status}): {detail}"
+        )
     response_credit = payload.get("credit")
     windows_reset = payload.get("windows_reset")
     valid_windows = (
@@ -307,7 +326,9 @@ def credits_from_usage_payload(raw_payload: object) -> list[dict[str, Any]]:
         if not isinstance(usage, dict):
             continue
         reset_credits = usage.get("codexResetCredits")
-        if isinstance(reset_credits, dict) and isinstance(reset_credits.get("credits"), list):
+        if isinstance(reset_credits, dict) and isinstance(
+            reset_credits.get("credits"), list
+        ):
             return [c for c in reset_credits["credits"] if isinstance(c, dict)]
     return []
 

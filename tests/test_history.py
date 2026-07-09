@@ -16,13 +16,15 @@ from codexbar_kde.model import normalize_payload
 
 
 def _providers(percent_primary: float, percent_secondary: float = 0.0):
-    return normalize_payload({
-        "provider": "codex",
-        "usage": {
-            "primary": {"usedPercent": percent_primary, "windowMinutes": 300},
-            "secondary": {"usedPercent": percent_secondary, "windowMinutes": 10080},
-        },
-    })
+    return normalize_payload(
+        {
+            "provider": "codex",
+            "usage": {
+                "primary": {"usedPercent": percent_primary, "windowMinutes": 300},
+                "secondary": {"usedPercent": percent_secondary, "windowMinutes": 10080},
+            },
+        }
+    )
 
 
 class HistoryStoreTests(unittest.TestCase):
@@ -72,12 +74,16 @@ class HistoryStoreTests(unittest.TestCase):
         now = dt.datetime(2026, 7, 4, 12, 0, 0, tzinfo=dt.timezone.utc)
         store.record(_providers(10), now=now)
         with self.path.open("ab") as fh:
-            fh.write(b'{"provider":"cod\xffex","windows":{"primary":20},"ts":"2026-07-04T12:30:00+00:00"}\n')
+            fh.write(
+                b'{"provider":"cod\xffex","windows":{"primary":20},"ts":"2026-07-04T12:30:00+00:00"}\n'
+            )
         store.record(_providers(30), now=now + dt.timedelta(hours=1))
 
         samples = store.load()
 
-        self.assertEqual([sample.windows["primary"] for sample in samples], [10.0, 30.0])
+        self.assertEqual(
+            [sample.windows["primary"] for sample in samples], [10.0, 30.0]
+        )
 
     def test_load_skips_timestamps_that_overflow_utc_conversion(self):
         valid = {
@@ -99,11 +105,13 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual([sample.windows["primary"] for sample in samples], [25.0])
 
     def test_load_skips_json_numbers_rejected_by_python(self):
-        valid = json.dumps({
-            "ts": "2026-07-04T12:00:00+00:00",
-            "provider": "codex",
-            "windows": {"primary": 25},
-        })
+        valid = json.dumps(
+            {
+                "ts": "2026-07-04T12:00:00+00:00",
+                "provider": "codex",
+                "windows": {"primary": 25},
+            }
+        )
         oversized_integer = (
             '{"ts":"2026-07-04T12:00:00+00:00","provider":"codex",'
             '"windows":{"primary":' + ("9" * 5_000) + "}}"
@@ -115,11 +123,13 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual([sample.windows["primary"] for sample in samples], [25.0])
 
     def test_load_skips_excessively_nested_json(self):
-        valid = json.dumps({
-            "ts": "2026-07-04T12:00:00+00:00",
-            "provider": "codex",
-            "windows": {"primary": 25},
-        })
+        valid = json.dumps(
+            {
+                "ts": "2026-07-04T12:00:00+00:00",
+                "provider": "codex",
+                "windows": {"primary": 25},
+            }
+        )
         depth = 100_000
         nested = ("[" * depth) + "0" + ("]" * depth)
         self.path.write_text(f"{nested}\n{valid}\n")
@@ -274,8 +284,13 @@ class HistoryStoreTests(unittest.TestCase):
         store.record(_providers(25), now=day1 + dt.timedelta(days=1))
 
         samples = store.load()
-        series = daily_peaks(samples, provider="codex", window_key="primary", days=7,
-                             now=dt.datetime(2026, 7, 4, 23, 0, 0, tzinfo=dt.timezone.utc))
+        series = daily_peaks(
+            samples,
+            provider="codex",
+            window_key="primary",
+            days=7,
+            now=dt.datetime(2026, 7, 4, 23, 0, 0, tzinfo=dt.timezone.utc),
+        )
 
         self.assertEqual(len(series), 7)
         self.assertEqual(series[-2].value, 40.0)
@@ -294,9 +309,13 @@ class BurnDownTests(unittest.TestCase):
             (base + dt.timedelta(hours=2), 70.0),
         ]
 
-        result = burn_down_series(samples, window_minutes=window_minutes, resets_at=resets_at)
+        result = burn_down_series(
+            samples, window_minutes=window_minutes, resets_at=resets_at
+        )
 
-        self.assertEqual(result.window_start, resets_at - dt.timedelta(minutes=window_minutes))
+        self.assertEqual(
+            result.window_start, resets_at - dt.timedelta(minutes=window_minutes)
+        )
         # actual remaining percent mirrors used percent
         self.assertEqual([round(p.value, 1) for p in result.actual], [60.0, 45.0, 30.0])
         # ideal starts at 100 at window start and hits 0 at reset

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
-import tomllib
+import sys
 import unittest
 from pathlib import Path
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # Python 3.10
+    tomllib = None
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,7 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PackagingTests(unittest.TestCase):
     def test_metadata_is_accepted_by_legacy_setuptools_license_schema(self):
-        data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        if tomllib is None:
+            self.assertIn('requires = ["setuptools==68.0.0"]', text)
+            self.assertIn('license = { file = "LICENSE" }', text)
+            self.assertNotIn("license-files", text)
+            return
+        data = tomllib.loads(text)
 
         self.assertEqual(data["build-system"]["requires"], ["setuptools==68.0.0"])
         self.assertEqual(data["project"]["license"], {"file": "LICENSE"})
@@ -19,9 +30,9 @@ class PackagingTests(unittest.TestCase):
 
     def test_appimage_inputs_are_immutable_and_hash_locked(self):
         script = (ROOT / "scripts" / "build_appimage.sh").read_text(encoding="utf-8")
-        requirements = (
-            ROOT / "packaging" / "appimage-requirements.txt"
-        ).read_text(encoding="utf-8")
+        requirements = (ROOT / "packaging" / "appimage-requirements.txt").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn("/continuous/", script)
         self.assertNotIn("pip install --upgrade", script)
@@ -33,6 +44,10 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("--runtime-file", script)
         self.assertIn("SOURCE_DATE_EPOCH", script)
         self.assertIn("APPIMAGE_OFFLINE", script)
+        self.assertIn("$APPDIR/python3.11.14.desktop", script)
+        self.assertIn("$APPDIR/python.png", script)
+        self.assertIn('rm -f "$APPDIR/.DirIcon"', script)
+        self.assertNotIn("continuous", script)
         self.assertEqual(requirements.count("--hash=sha256:"), 3)
 
     def test_abi_parser_reads_needs_but_ignores_library_definitions(self):
@@ -64,6 +79,10 @@ Version definition section '.gnu.version_d' contains 1 entry:
 
         for version in ("3.10", "3.11", "3.12", "3.13", "3.14"):
             self.assertIn(f'"{version}"', workflow)
+        self.assertIn("libegl1", workflow)
+        self.assertIn("libgl1", workflow)
+        self.assertIn("libxkbcommon-x11-0", workflow)
+        self.assertIn("libxcb-cursor0", workflow)
         self.assertIn("scripts/build_appimage.sh", workflow)
         self.assertIn("APPIMAGE_OFFLINE: 1", workflow)
         self.assertIn("cmp ", workflow)

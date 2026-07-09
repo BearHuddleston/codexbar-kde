@@ -90,9 +90,13 @@ def hairline() -> QFrame:
     return line
 
 
-def _label(text: str, *, size: int = 13, weight: int = 400, color: str = TEXT) -> QLabel:
+def _label(
+    text: str, *, size: int = 13, weight: int = 400, color: str = TEXT
+) -> QLabel:
     label = QLabel(text)
-    label.setStyleSheet(f"color: {color}; font-size: {size}px; font-weight: {weight}; background: transparent;")
+    label.setStyleSheet(
+        f"color: {color}; font-size: {size}px; font-weight: {weight}; background: transparent;"
+    )
     return label
 
 
@@ -123,7 +127,11 @@ class BarChartWidget(QWidget):
         painter.drawLine(rect.left(), baseline_y, rect.right(), baseline_y)
         if not self.points:
             painter.setPen(QColor(MUTED))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No history yet — data accrues with each refresh")
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "No history yet — data accrues with each refresh",
+            )
             painter.end()
             return
         count = len(self.points)
@@ -132,7 +140,7 @@ class BarChartWidget(QWidget):
         label_font = QFont(self.font())
         label_font.setPixelSize(10)
         label_step = max(1, count // 6)
-        last_labeled = -10**9
+        last_labeled = -(10**9)
         for index, point in enumerate(self.points):
             x = rect.left() + slot * index + (slot - bar_w) / 2
             h = (max(0.0, min(100.0, point.value)) / 100.0) * rect.height()
@@ -143,13 +151,27 @@ class BarChartWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)
             painter.drawRoundedRect(QRectF(x, baseline_y - h, bar_w, h), 2, 2)
-            wants_label = index == 0 or index == count - 1 or (index % label_step == 0 and count - 1 - index >= 3)
+            wants_label = (
+                index == 0
+                or index == count - 1
+                or (index % label_step == 0 and count - 1 - index >= 3)
+            )
             # keep labels at least ~3 slots apart so adjacent dates never collide
-            if count <= 31 and wants_label and index - last_labeled >= max(3, label_step // 2):
+            if (
+                count <= 31
+                and wants_label
+                and index - last_labeled >= max(3, label_step // 2)
+            ):
                 painter.setPen(QColor(MUTED))
                 painter.setFont(label_font)
-                painter.drawText(int(x - slot), baseline_y + 6, int(slot * 3), 14,
-                                 Qt.AlignmentFlag.AlignHCenter, point.ts.strftime("%b %d"))
+                painter.drawText(
+                    int(x - slot),
+                    baseline_y + 6,
+                    int(slot * 3),
+                    14,
+                    Qt.AlignmentFlag.AlignHCenter,
+                    point.ts.strftime("%b %d"),
+                )
                 last_labeled = index
         painter.end()
 
@@ -169,10 +191,9 @@ class BurnDownWidget(QWidget):
         self.accent = QColor(color)
         self.update()
 
-    def _x(self, rect, when: dt.datetime) -> float:
-        assert self.burn is not None
-        total = (self.burn.resets_at - self.burn.window_start).total_seconds()
-        frac = 0.0 if total <= 0 else (when - self.burn.window_start).total_seconds() / total
+    def _x(self, rect, burn: BurnDown, when: dt.datetime) -> float:
+        total = (burn.resets_at - burn.window_start).total_seconds()
+        frac = 0.0 if total <= 0 else (when - burn.window_start).total_seconds() / total
         return rect.left() + max(0.0, min(1.0, frac)) * rect.width()
 
     def _y(self, rect, remaining: float) -> float:
@@ -187,20 +208,28 @@ class BurnDownWidget(QWidget):
         burn = self.burn
         if burn is None or not burn.actual:
             painter.setPen(QColor(MUTED))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                             "No samples in the current window yet")
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "No samples in the current window yet",
+            )
             painter.end()
             return
         # ideal steady-burn dashed line 100% -> 0%
         ideal_pen = QPen(QColor(IDEAL), 1.4)
         ideal_pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(ideal_pen)
-        painter.drawLine(QPointF(rect.left(), self._y(rect, 100.0)),
-                         QPointF(rect.right(), self._y(rect, 0.0)))
+        painter.drawLine(
+            QPointF(rect.left(), self._y(rect, 100.0)),
+            QPointF(rect.right(), self._y(rect, 0.0)),
+        )
         # actual remaining
         pen = QPen(self.accent, 2.0)
         painter.setPen(pen)
-        pts = [QPointF(self._x(rect, p.ts), self._y(rect, p.value)) for p in burn.actual]
+        pts = [
+            QPointF(self._x(rect, burn, p.ts), self._y(rect, p.value))
+            for p in burn.actual
+        ]
         for a, b in zip(pts, pts[1:]):
             painter.drawLine(a, b)
         painter.setBrush(self.accent)
@@ -212,10 +241,22 @@ class BurnDownWidget(QWidget):
         font = QFont(self.font())
         font.setPixelSize(10)
         painter.setFont(font)
-        painter.drawText(rect.left(), rect.bottom() + 6, 160, 14, Qt.AlignmentFlag.AlignLeft,
-                         burn.window_start.astimezone().strftime("window start %H:%M"))
-        painter.drawText(rect.right() - 160, rect.bottom() + 6, 160, 14, Qt.AlignmentFlag.AlignRight,
-                         burn.resets_at.astimezone().strftime("reset %H:%M"))
+        painter.drawText(
+            rect.left(),
+            rect.bottom() + 6,
+            160,
+            14,
+            Qt.AlignmentFlag.AlignLeft,
+            burn.window_start.astimezone().strftime("window start %H:%M"),
+        )
+        painter.drawText(
+            rect.right() - 160,
+            rect.bottom() + 6,
+            160,
+            14,
+            Qt.AlignmentFlag.AlignRight,
+            burn.resets_at.astimezone().strftime("reset %H:%M"),
+        )
         painter.end()
 
 
@@ -305,7 +346,9 @@ class ResetCreditPanel(QFrame):
         self.credit_lines.setText("\n".join(lines))
         if target:
             note = format_expiry(target)
-            self.redeem_button.setText(f"Redeem next ({note})" if note else "Redeem next")
+            self.redeem_button.setText(
+                f"Redeem next ({note})" if note else "Redeem next"
+            )
             self.redeem_button.setEnabled(bool(self._target_id))
         self.status_line.hide()
         self.show()
@@ -318,7 +361,9 @@ class ResetCreditPanel(QFrame):
 
     def show_result(self, message: str, *, ok: bool) -> None:
         color = "#8fd3a8" if ok else "#ff9b9b"
-        self.status_line.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
+        self.status_line.setStyleSheet(
+            f"color: {color}; font-size: 11px; background: transparent;"
+        )
         self.status_line.setText(message)
         self.status_line.show()
 
@@ -340,7 +385,9 @@ class OverviewView(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.scroll_area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+        )
         outer.addWidget(self.scroll_area)
         self._host = QWidget()
         self._layout = QVBoxLayout(self._host)
@@ -363,7 +410,12 @@ class OverviewView(QWidget):
                 widget.deleteLater()
         self._summary_parts = []
         if not providers:
-            self._layout.addWidget(_label("No provider data yet — refresh or enable providers in the CodexBar CLI.", color=MUTED))
+            self._layout.addWidget(
+                _label(
+                    "No provider data yet — refresh or enable providers in the CodexBar CLI.",
+                    color=MUTED,
+                )
+            )
             self._layout.addStretch(1)
             return
         for index, provider in enumerate(providers):
@@ -382,18 +434,33 @@ class OverviewView(QWidget):
         head = QHBoxLayout()
         head.setSpacing(8)
         dot = QLabel("●")
-        dot.setStyleSheet(f"color: {'#ff6b6b' if provider.error else accent}; font-size: 11px; background: transparent;")
+        dot.setStyleSheet(
+            f"color: {'#ff6b6b' if provider.error else accent}; font-size: 11px; background: transparent;"
+        )
         head.addWidget(dot)
         title = _label(provider.display_name, size=16, weight=700)
         head.addWidget(title)
-        meta_bits = [bit for bit in (provider.source, f"v{provider.version}" if provider.version else "") if bit]
+        meta_bits = [
+            bit
+            for bit in (
+                provider.source,
+                f"v{provider.version}" if provider.version else "",
+            )
+            if bit
+        ]
         if meta_bits:
             head.addWidget(_label(" · ".join(meta_bits), size=11, color=MUTED))
         head.addStretch(1)
         if not provider.error and provider.windows:
             peak = provider.max_used_percent
-            head.addWidget(_label(f"{100 - peak:.0f}% left", size=13, weight=700,
-                                  color=color_for_percent(peak)))
+            head.addWidget(
+                _label(
+                    f"{100 - peak:.0f}% left",
+                    size=13,
+                    weight=700,
+                    color=color_for_percent(peak),
+                )
+            )
         layout.addLayout(head)
         layout.addWidget(hairline())
         self._summary_parts.append(provider.display_name)
@@ -451,7 +518,9 @@ class HistoryView(QWidget):
         layout.setSpacing(12)
         controls = QHBoxLayout()
         self.selector = QComboBox()
-        self.selector.currentIndexChanged.connect(lambda _: self.selection_changed.emit())
+        self.selector.currentIndexChanged.connect(
+            lambda _: self.selection_changed.emit()
+        )
         controls.addWidget(self.selector)
         controls.addStretch(1)
         layout.addLayout(controls)
@@ -495,11 +564,15 @@ class BurnDownView(QWidget):
         layout.setSpacing(12)
         controls = QHBoxLayout()
         self.selector = QComboBox()
-        self.selector.currentIndexChanged.connect(lambda _: self.selection_changed.emit())
+        self.selector.currentIndexChanged.connect(
+            lambda _: self.selection_changed.emit()
+        )
         controls.addWidget(self.selector)
         controls.addStretch(1)
         layout.addLayout(controls)
-        self.caption = _label("Remaining budget vs ideal steady burn (dashed)", size=11, color=MUTED)
+        self.caption = _label(
+            "Remaining budget vs ideal steady burn (dashed)", size=11, color=MUTED
+        )
         layout.addWidget(self.caption)
         self.chart = BurnDownWidget()
         layout.addWidget(self.chart, 1)
@@ -537,10 +610,18 @@ class DetailsView(QWidget):
         layout.setContentsMargins(4, 4, 12, 12)
         layout.setSpacing(8)
         controls = QHBoxLayout()
-        controls.addWidget(_label("Everything meaningful from `codexbar usage`, compacted.", size=11, color=MUTED))
+        controls.addWidget(
+            _label(
+                "Everything meaningful from `codexbar usage`, compacted.",
+                size=11,
+                color=MUTED,
+            )
+        )
         controls.addStretch(1)
         self.privacy_toggle = QCheckBox("Privacy mode")
-        self.privacy_toggle.setToolTip("Mask account identity in Details and the tray tooltip")
+        self.privacy_toggle.setToolTip(
+            "Mask account identity in Details and the tray tooltip"
+        )
         self.privacy_toggle.setChecked(True)
         self.privacy_toggle.toggled.connect(self.privacy_changed.emit)
         controls.addWidget(self.privacy_toggle)
@@ -581,11 +662,19 @@ def window_options(providers: list[ProviderUsage]) -> list[tuple[str, str, str]]
         if provider.error:
             continue
         for window in provider.windows:
-            options.append((provider.provider, window.key, f"{provider.display_name} — {window.label}"))
+            options.append(
+                (
+                    provider.provider,
+                    window.key,
+                    f"{provider.display_name} — {window.label}",
+                )
+            )
     return options
 
 
-def latest_reset_at(providers: list[ProviderUsage], provider_key: str, window_key: str) -> tuple[dt.datetime | None, int | None]:
+def latest_reset_at(
+    providers: list[ProviderUsage], provider_key: str, window_key: str
+) -> tuple[dt.datetime | None, int | None]:
     for provider in providers:
         if provider.provider != provider_key:
             continue

@@ -25,7 +25,9 @@ from .model import ProviderUsage, parse_iso_datetime
 
 
 def default_history_path() -> Path:
-    state_home = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    state_home = os.environ.get("XDG_STATE_HOME") or os.path.expanduser(
+        "~/.local/state"
+    )
     return Path(state_home) / "codexbar-kde" / "history.jsonl"
 
 
@@ -65,7 +67,9 @@ def _utc(value: dt.datetime) -> dt.datetime:
 class HistoryStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_history_path()
-        self._manage_parent_permissions = path is None or self.path == default_history_path()
+        self._manage_parent_permissions = (
+            path is None or self.path == default_history_path()
+        )
         self._thread_lock = threading.RLock()
         self._next_prune_at: dt.datetime | None = None
 
@@ -156,7 +160,9 @@ class HistoryStore:
             samples.append(Sample(ts=now, provider=provider.provider, windows=windows))
         if not samples:
             return []
-        payload = ("\n".join(self._serialize(sample) for sample in samples) + "\n").encode("utf-8")
+        payload = (
+            "\n".join(self._serialize(sample) for sample in samples) + "\n"
+        ).encode("utf-8")
         with self._locked(exclusive=True):
             created = not self.path.exists()
             fd = os.open(
@@ -208,9 +214,7 @@ class HistoryStore:
         with self._locked(exclusive=False):
             return self._load_unlocked()
 
-    def prune(
-        self, *, days: int, now: dt.datetime | None = None
-    ) -> list[Sample]:
+    def prune(self, *, days: int, now: dt.datetime | None = None) -> list[Sample]:
         if days < 0:
             raise ValueError("days must be non-negative")
         now = _utc(now or dt.datetime.now(dt.timezone.utc))
@@ -218,7 +222,9 @@ class HistoryStore:
         with self._locked(exclusive=True):
             if not self.path.exists():
                 return []
-            samples = [sample for sample in self._load_unlocked() if sample.ts >= cutoff]
+            samples = [
+                sample for sample in self._load_unlocked() if sample.ts >= cutoff
+            ]
             fd, tmp_name = tempfile.mkstemp(
                 prefix=f".{self.path.name}.",
                 suffix=".tmp",
@@ -259,8 +265,14 @@ class HistoryStore:
             return samples
 
 
-def daily_peaks(samples: Iterable[Sample], *, provider: str, window_key: str,
-                days: int, now: dt.datetime | None = None) -> list[SeriesPoint]:
+def daily_peaks(
+    samples: Iterable[Sample],
+    *,
+    provider: str,
+    window_key: str,
+    days: int,
+    now: dt.datetime | None = None,
+) -> list[SeriesPoint]:
     """Max used-percent per calendar day (UTC) for the last `days` days.
 
     Days without samples yield 0 so charts keep a stable x-axis.
@@ -281,8 +293,12 @@ def daily_peaks(samples: Iterable[Sample], *, provider: str, window_key: str,
     return series
 
 
-def burn_down_series(samples: Iterable[tuple[dt.datetime, float]], *,
-                     window_minutes: int, resets_at: dt.datetime) -> BurnDown:
+def burn_down_series(
+    samples: Iterable[tuple[dt.datetime, float]],
+    *,
+    window_minutes: int,
+    resets_at: dt.datetime,
+) -> BurnDown:
     """Remaining-percent points for the current window plus its ideal line.
 
     `samples` are (timestamp, used_percent) pairs; only those inside the

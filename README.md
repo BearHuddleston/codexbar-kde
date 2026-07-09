@@ -93,6 +93,8 @@ chmod +x CodexBar_KDE-x86_64.AppImage
 
 The release AppImage is x86_64 and audited for a maximum `GLIBC_2.28`
 requirement (for example, Debian 10+, Ubuntu 20.04+, and current Arch/CachyOS).
+It intentionally uses the host graphics-dispatch stack, which must provide
+`libEGL.so.1` and `libGL.so.1`, so hardware-specific drivers remain compatible.
 
 **Option B — pip / pipx** (uses your system Qt platform plugins via the PyQt6 wheel):
 

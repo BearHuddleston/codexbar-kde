@@ -32,6 +32,7 @@ PROVIDER_NAMES = {
     "ollama": "Ollama",
 }
 
+
 @dataclass(frozen=True)
 class WindowUsage:
     key: str
@@ -145,7 +146,12 @@ def _used_percent(window: dict[str, Any]) -> float | None:
 
 
 def _window_label(key: str, window: dict[str, Any]) -> str:
-    raw = window.get("label") or window.get("name") or window.get("window") or WINDOW_LABELS.get(key, key)
+    raw = (
+        window.get("label")
+        or window.get("name")
+        or window.get("window")
+        or WINDOW_LABELS.get(key, key)
+    )
     return str(raw).strip() or WINDOW_LABELS.get(key, key)
 
 
@@ -207,7 +213,9 @@ def _pace_note(pace_window: Any) -> str:
     return " · ".join(bits)
 
 
-def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[ProviderUsage]:
+def normalize_payload(
+    payload: Any, *, now: dt.datetime | None = None
+) -> list[ProviderUsage]:
     entries = payload if isinstance(payload, list) else [payload]
     providers: list[ProviderUsage] = []
     for raw_entry in entries:
@@ -228,16 +236,18 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
             if used is None:
                 continue
             reset = _reset_value(window)
-            windows.append(WindowUsage(
-                key=key,
-                label=_window_label(key, window),
-                used_percent=round(used, 1),
-                resets_at=reset,
-                reset_description=_reset_description(window),
-                reset_countdown=format_reset_countdown(reset, now=now),
-                pace_note=_pace_note(pace.get(key)),
-                window_minutes=_window_minutes(window),
-            ))
+            windows.append(
+                WindowUsage(
+                    key=key,
+                    label=_window_label(key, window),
+                    used_percent=round(used, 1),
+                    resets_at=reset,
+                    reset_description=_reset_description(window),
+                    reset_countdown=format_reset_countdown(reset, now=now),
+                    pace_note=_pace_note(pace.get(key)),
+                    window_minutes=_window_minutes(window),
+                )
+            )
 
         extra_windows = usage.get("extraRateWindows")
         if isinstance(extra_windows, list):
@@ -251,16 +261,20 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
                     continue
                 reset = _reset_value(window)
                 key = str(extra.get("key") or extra.get("id") or f"extra{index}")
-                label = str(extra.get("title") or "").strip() or _window_label(key, window)
-                windows.append(WindowUsage(
-                    key=key,
-                    label=label,
-                    used_percent=round(used, 1),
-                    resets_at=reset,
-                    reset_description=_reset_description(window),
-                    reset_countdown=format_reset_countdown(reset, now=now),
-                    window_minutes=_window_minutes(window),
-                ))
+                label = str(extra.get("title") or "").strip() or _window_label(
+                    key, window
+                )
+                windows.append(
+                    WindowUsage(
+                        key=key,
+                        label=label,
+                        used_percent=round(used, 1),
+                        resets_at=reset,
+                        reset_description=_reset_description(window),
+                        reset_countdown=format_reset_countdown(reset, now=now),
+                        window_minutes=_window_minutes(window),
+                    )
+                )
 
         credits = raw_entry.get("credits")
         credits_remaining = None
@@ -269,16 +283,18 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
             if credits_remaining is not None and credits_remaining.is_integer():
                 credits_remaining = int(credits_remaining)
 
-        providers.append(ProviderUsage(
-            provider=provider,
-            display_name=provider_display_name(provider),
-            source=str(raw_entry.get("source") or ""),
-            version=str(raw_entry.get("version") or ""),
-            windows=windows,
-            credits_remaining=credits_remaining,
-            updated_at=str(usage.get("updatedAt") or "") or None,
-            error=_error_message(raw_entry),
-        ))
+        providers.append(
+            ProviderUsage(
+                provider=provider,
+                display_name=provider_display_name(provider),
+                source=str(raw_entry.get("source") or ""),
+                version=str(raw_entry.get("version") or ""),
+                windows=windows,
+                credits_remaining=credits_remaining,
+                updated_at=str(usage.get("updatedAt") or "") or None,
+                error=_error_message(raw_entry),
+            )
+        )
     return providers
 
 

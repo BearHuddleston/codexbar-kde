@@ -100,9 +100,7 @@ def main() -> int:
             metavar="VERSION",
         )
     args = parser.parse_args()
-    ceilings = {
-        kind: getattr(args, f"max_{kind.lower()}") for kind in DEFAULT_CEILINGS
-    }
+    ceilings = {kind: getattr(args, f"max_{kind.lower()}") for kind in DEFAULT_CEILINGS}
 
     try:
         elf_count, requirements = audit_appimage(args.appimage)

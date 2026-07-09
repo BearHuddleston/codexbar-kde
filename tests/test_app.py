@@ -33,7 +33,14 @@ class AppTests(unittest.TestCase):
     def test_build_codexbar_command_uses_absolute_binary_and_json_only(self):
         self.assertEqual(
             build_codexbar_command("/usr/bin/codexbar"),
-            ["/usr/bin/codexbar", "usage", "--format", "json", "--json-only", "--pretty"],
+            [
+                "/usr/bin/codexbar",
+                "usage",
+                "--format",
+                "json",
+                "--json-only",
+                "--pretty",
+            ],
         )
 
     def test_modern_ui_helpers_use_provider_accents_and_thin_meters(self):
@@ -48,10 +55,20 @@ class AppTests(unittest.TestCase):
         self.assertIn("max-height: 6px", style)
 
     def test_load_usage_from_json_text_returns_normalized_providers(self):
-        text = json.dumps([
-            {"provider": "codex", "source": "oauth", "usage": {"primary": {"usedPercent": 33}}},
-            {"provider": "claude", "source": "oauth", "usage": {"secondary": {"usedPercent": 22}}},
-        ])
+        text = json.dumps(
+            [
+                {
+                    "provider": "codex",
+                    "source": "oauth",
+                    "usage": {"primary": {"usedPercent": 33}},
+                },
+                {
+                    "provider": "claude",
+                    "source": "oauth",
+                    "usage": {"secondary": {"usedPercent": 22}},
+                },
+            ]
+        )
 
         providers = load_usage_from_json_text(text)
 
@@ -59,12 +76,22 @@ class AppTests(unittest.TestCase):
         self.assertEqual(providers[0].windows[0].used_percent, 33.0)
         self.assertEqual(providers[1].windows[0].label, "weekly")
 
-    def test_load_usage_payload_from_command_accepts_json_payload_even_when_codexbar_exits_nonzero(self):
-        stdout = json.dumps([
-            {"provider": "codex", "usage": {"primary": {"usedPercent": 1}}},
-            {"provider": "claude", "source": "auto", "error": {"message": "rate limited"}},
-        ])
-        completed = subprocess.CompletedProcess(["/usr/bin/codexbar"], 1, stdout=stdout, stderr="")
+    def test_load_usage_payload_from_command_accepts_json_payload_even_when_codexbar_exits_nonzero(
+        self,
+    ):
+        stdout = json.dumps(
+            [
+                {"provider": "codex", "usage": {"primary": {"usedPercent": 1}}},
+                {
+                    "provider": "claude",
+                    "source": "auto",
+                    "error": {"message": "rate limited"},
+                },
+            ]
+        )
+        completed = subprocess.CompletedProcess(
+            ["/usr/bin/codexbar"], 1, stdout=stdout, stderr=""
+        )
         with patch("codexbar_kde.app._run_codexbar_command", return_value=completed):
             payload = load_usage_payload_from_command("/usr/bin/codexbar")
 
@@ -88,7 +115,9 @@ class AppTests(unittest.TestCase):
     def test_redeem_worker_revalidates_and_reports_reconciled_success(self):
         worker = RedeemWorker("RateLimitResetCredit_a")
         emitted = []
-        worker.finished_with_result.connect(lambda ok, message: emitted.append((ok, message)))
+        worker.finished_with_result.connect(
+            lambda ok, message: emitted.append((ok, message))
+        )
         result = {
             "code": "reset",
             "windows_reset": None,
@@ -97,7 +126,9 @@ class AppTests(unittest.TestCase):
         }
         with (
             patch("codexbar_kde.app.load_codex_auth", return_value=("tok", "acct")),
-            patch("codexbar_kde.app.redeem_reset_credit", return_value=result) as redeem,
+            patch(
+                "codexbar_kde.app.redeem_reset_credit", return_value=result
+            ) as redeem,
         ):
             worker.run()
 
@@ -105,24 +136,32 @@ class AppTests(unittest.TestCase):
         self.assertEqual(emitted, [(True, "Redeemed — confirmed after status refresh")])
 
     def test_build_tray_tooltip_shows_expanded_provider_details_without_identity(self):
-        text = json.dumps([
-            {
-                "provider": "codex",
-                "source": "oauth",
-                "version": "0.142.5",
-                "usage": {
-                    "accountEmail": "person@example.com",
-                    "primary": {"usedPercent": 33, "resetsAt": "2026-07-04T01:00:00Z"},
-                    "secondary": {"usedPercent": 12},
+        text = json.dumps(
+            [
+                {
+                    "provider": "codex",
+                    "source": "oauth",
+                    "version": "0.142.5",
+                    "usage": {
+                        "accountEmail": "person@example.com",
+                        "primary": {
+                            "usedPercent": 33,
+                            "resetsAt": "2026-07-04T01:00:00Z",
+                        },
+                        "secondary": {"usedPercent": 12},
+                    },
+                    "credits": {"remaining": 4},
                 },
-                "credits": {"remaining": 4},
-            },
-            {
-                "provider": "claude",
-                "source": "oauth",
-                "usage": {"primary": {"usedPercent": 0}, "secondary": {"usedPercent": 22}},
-            },
-        ])
+                {
+                    "provider": "claude",
+                    "source": "oauth",
+                    "usage": {
+                        "primary": {"usedPercent": 0},
+                        "secondary": {"usedPercent": 22},
+                    },
+                },
+            ]
+        )
         providers = load_usage_from_json_text(text)
 
         tooltip = build_tray_tooltip(providers)
@@ -139,22 +178,22 @@ class AppTests(unittest.TestCase):
         self.assertNotIn("person@example.com", tooltip)
 
     def test_payload_formatter_is_private_by_default_and_shared_with_tray(self):
-        payload = [{
-            "provider": "codex",
-            "source": "token=REVIEW_PRIVACY_SECRET_123456",
-            "version": "0.1",
-            "usage": {
-                "accountEmail": "person@example.com",
-                "loginMethod": "pro",
-                "primary": {"usedPercent": 33},
-            },
-        }]
+        payload = [
+            {
+                "provider": "codex",
+                "source": "token=REVIEW_PRIVACY_SECRET_123456",
+                "version": "0.1",
+                "usage": {
+                    "accountEmail": "person@example.com",
+                    "loginMethod": "pro",
+                    "primary": {"usedPercent": 33},
+                },
+            }
+        ]
         providers = load_usage_from_json_text(json.dumps(payload))
 
         private_text = "\n".join(format_payload_lines(payload))
-        revealed_text = "\n".join(
-            format_payload_lines(payload, privacy_mode=False)
-        )
+        revealed_text = "\n".join(format_payload_lines(payload, privacy_mode=False))
         tooltip = build_tray_tooltip(providers, raw_payload=payload)
 
         self.assertNotIn("person@example.com", private_text)
@@ -165,15 +204,17 @@ class AppTests(unittest.TestCase):
         self.assertIn(private_text, tooltip)
 
     def test_normalized_summaries_preserve_reset_descriptions(self):
-        payload = [{
-            "provider": "claude",
-            "usage": {
-                "primary": {
-                    "usedPercent": 12,
-                    "resetDescription": "Resets4pm(America/Chicago)",
-                }
-            },
-        }]
+        payload = [
+            {
+                "provider": "claude",
+                "usage": {
+                    "primary": {
+                        "usedPercent": 12,
+                        "resetDescription": "Resets4pm(America/Chicago)",
+                    }
+                },
+            }
+        ]
         providers = load_usage_from_json_text(json.dumps(payload))
 
         summary = "\n".join(provider_summary_lines(providers))
@@ -184,15 +225,17 @@ class AppTests(unittest.TestCase):
 
     def test_normalized_summaries_always_redact_credentials(self):
         secret = "FALLBACK_RESET_SECRET_123456"
-        payload = [{
-            "provider": "claude",
-            "usage": {
-                "primary": {
-                    "usedPercent": 12,
-                    "resetDescription": f"token={secret}",
-                }
-            },
-        }]
+        payload = [
+            {
+                "provider": "claude",
+                "usage": {
+                    "primary": {
+                        "usedPercent": 12,
+                        "resetDescription": f"token={secret}",
+                    }
+                },
+            }
+        ]
         providers = load_usage_from_json_text(json.dumps(payload))
 
         summary = "\n".join(provider_summary_lines(providers))
@@ -205,13 +248,15 @@ class AppTests(unittest.TestCase):
         self.assertNotIn(secret, tooltip)
 
     def test_payload_formatter_rejects_nonfinite_and_overflowing_percentages(self):
-        payload = [{
-            "provider": "codex",
-            "usage": {
-                "primary": {"usedPercent": 10 ** 5000},
-                "secondary": {"usedPercent": "NaN"},
-            },
-        }]
+        payload = [
+            {
+                "provider": "codex",
+                "usage": {
+                    "primary": {"usedPercent": 10**5000},
+                    "secondary": {"usedPercent": "NaN"},
+                },
+            }
+        ]
 
         text = "\n".join(format_payload_lines(payload))
 
@@ -273,9 +318,7 @@ class AppTests(unittest.TestCase):
         for scheme in ("Bearer", "Basic"):
             secret = f"REVIEW_{scheme.upper()}_SECRET_123456"
             with self.subTest(scheme=scheme):
-                redacted = redact_text(
-                    f'{{"authorization": "{scheme} {secret}"}}'
-                )
+                redacted = redact_text(f'{{"authorization": "{scheme} {secret}"}}')
 
                 self.assertIn("[REDACTED]", redacted)
                 self.assertNotIn(secret, redacted)
@@ -287,7 +330,13 @@ class AppTests(unittest.TestCase):
         )
 
     def test_build_tray_tooltip_compacts_provider_error_from_raw_payload(self):
-        payload = [{"provider": "claude", "source": "auto", "error": {"message": "Could not parse Claude usage: rate limited"}}]
+        payload = [
+            {
+                "provider": "claude",
+                "source": "auto",
+                "error": {"message": "Could not parse Claude usage: rate limited"},
+            }
+        ]
         providers = load_usage_from_json_text(json.dumps(payload))
 
         tooltip = build_tray_tooltip(providers, raw_payload=payload)
@@ -304,19 +353,40 @@ class AppTests(unittest.TestCase):
                 "source": "oauth",
                 "version": "0.142.5",
                 "usage": {
-                    "primary": {"resetDescription": "tomorrow, 1:03 AM", "usedPercent": 36},
-                    "secondary": {"resetDescription": "Jul 6 at 10:01 PM", "usedPercent": 7},
+                    "primary": {
+                        "resetDescription": "tomorrow, 1:03 AM",
+                        "usedPercent": 36,
+                    },
+                    "secondary": {
+                        "resetDescription": "Jul 6 at 10:01 PM",
+                        "usedPercent": 7,
+                    },
                     "updatedAt": "2026-07-04T04:24:16Z",
                 },
-                "pace": {"primary": {"deltaPercent": -30, "expectedUsedPercent": 66, "willLastToReset": True}},
+                "pace": {
+                    "primary": {
+                        "deltaPercent": -30,
+                        "expectedUsedPercent": 66,
+                        "willLastToReset": True,
+                    }
+                },
                 "credits": {"remaining": 0},
             },
             {
                 "provider": "claude",
                 "source": "claude",
-                "usage": {"primary": {"resetDescription": "Resets1am(America/Chicago)", "usedPercent": 0}},
+                "usage": {
+                    "primary": {
+                        "resetDescription": "Resets1am(America/Chicago)",
+                        "usedPercent": 0,
+                    }
+                },
             },
-            {"provider": "gemini", "source": "auto", "error": {"message": "rate limited"}},
+            {
+                "provider": "gemini",
+                "source": "auto",
+                "error": {"message": "rate limited"},
+            },
         ]
         providers = load_usage_from_json_text(json.dumps(payload))
 
@@ -344,24 +414,54 @@ class AppTests(unittest.TestCase):
                     "accountEmail": "person@example.com",
                     "loginMethod": "pro",
                     "dataConfidence": "exact",
-                    "primary": {"usedPercent": 0, "resetDescription": "tomorrow, 2:47 PM", "windowMinutes": 300},
-                    "secondary": {"usedPercent": 8, "resetDescription": "Jul 6 at 10:01 PM", "windowMinutes": 10080},
+                    "primary": {
+                        "usedPercent": 0,
+                        "resetDescription": "tomorrow, 2:47 PM",
+                        "windowMinutes": 300,
+                    },
+                    "secondary": {
+                        "usedPercent": 8,
+                        "resetDescription": "Jul 6 at 10:01 PM",
+                        "windowMinutes": 10080,
+                    },
                     "extraRateWindows": [
-                        {"id": "codex-spark", "title": "Codex Spark Weekly",
-                         "window": {"usedPercent": 0, "resetDescription": "Jul 11 at 2:00 PM"}},
+                        {
+                            "id": "codex-spark",
+                            "title": "Codex Spark Weekly",
+                            "window": {
+                                "usedPercent": 0,
+                                "resetDescription": "Jul 11 at 2:00 PM",
+                            },
+                        },
                     ],
                     "codexResetCredits": {
                         "availableCount": 4,
                         "credits": [
-                            {"title": "Full reset (Weekly + 5 hr)", "status": "available", "expires_at": "2026-07-12T02:39:09Z"},
-                            {"title": "Full reset (Weekly + 5 hr)", "status": "available", "expires_at": "2026-07-18T01:00:00Z"},
+                            {
+                                "title": "Full reset (Weekly + 5 hr)",
+                                "status": "available",
+                                "expires_at": "2026-07-12T02:39:09Z",
+                            },
+                            {
+                                "title": "Full reset (Weekly + 5 hr)",
+                                "status": "available",
+                                "expires_at": "2026-07-18T01:00:00Z",
+                            },
                         ],
                     },
                     "updatedAt": "2026-07-04T04:24:16Z",
                 },
                 "pace": {
-                    "primary": {"deltaPercent": -84, "expectedUsedPercent": 84, "willLastToReset": True},
-                    "secondary": {"deltaPercent": 12, "expectedUsedPercent": 67, "willLastToReset": False},
+                    "primary": {
+                        "deltaPercent": -84,
+                        "expectedUsedPercent": 84,
+                        "willLastToReset": True,
+                    },
+                    "secondary": {
+                        "deltaPercent": 12,
+                        "expectedUsedPercent": 67,
+                        "willLastToReset": False,
+                    },
                 },
                 "credits": {"remaining": 0},
             },
@@ -369,12 +469,19 @@ class AppTests(unittest.TestCase):
                 "provider": "claude",
                 "source": "claude",
                 "version": "2.1.201",
-                "usage": {"primary": {"usedPercent": 0, "resetDescription": "Resets4pm(America/Chicago)"}},
+                "usage": {
+                    "primary": {
+                        "usedPercent": 0,
+                        "resetDescription": "Resets4pm(America/Chicago)",
+                    }
+                },
             },
             {
                 "provider": "gemini",
                 "source": "auto",
-                "error": {"message": "Could not parse Gemini usage: the quota endpoint is rate limited right now. Please try again later."},
+                "error": {
+                    "message": "Could not parse Gemini usage: the quota endpoint is rate limited right now. Please try again later."
+                },
             },
         ]
         providers = load_usage_from_json_text(json.dumps(payload))
@@ -382,12 +489,17 @@ class AppTests(unittest.TestCase):
         tooltip = build_tray_tooltip(providers, raw_payload=payload)
 
         for line in tooltip.splitlines():
-            self.assertLessEqual(len(line), 46, f"line too wide for KDE tooltip wrap: {line!r}")
+            self.assertLessEqual(
+                len(line), 46, f"line too wide for KDE tooltip wrap: {line!r}"
+            )
 
     def test_format_updated_age_returns_relative_time(self):
         import datetime as dt
+
         now = dt.datetime(2026, 7, 4, 6, 30, 0, tzinfo=dt.timezone.utc)
-        self.assertEqual(format_updated_age("2026-07-04T06:29:40Z", now=now), "just now")
+        self.assertEqual(
+            format_updated_age("2026-07-04T06:29:40Z", now=now), "just now"
+        )
         self.assertEqual(format_updated_age("2026-07-04T06:05:00Z", now=now), "25m ago")
         self.assertEqual(format_updated_age("2026-07-04T02:30:00Z", now=now), "4h ago")
         self.assertEqual(format_updated_age("2026-07-01T06:30:00Z", now=now), "3d ago")
@@ -402,10 +514,26 @@ class AppTests(unittest.TestCase):
                     "codexResetCredits": {
                         "availableCount": 4,
                         "credits": [
-                            {"title": "Full reset (Weekly + 5 hr)", "status": "available", "expires_at": "2026-07-12T02:39:09Z"},
-                            {"title": "Full reset (Weekly + 5 hr)", "status": "available", "expires_at": "2026-07-18T01:00:00Z"},
-                            {"title": "Full reset (Weekly + 5 hr)", "status": "available", "expires_at": "2026-07-27T01:00:00Z"},
-                            {"title": "Full reset (Weekly + 5 hr)", "status": "available", "expires_at": "2026-07-31T01:00:00Z"},
+                            {
+                                "title": "Full reset (Weekly + 5 hr)",
+                                "status": "available",
+                                "expires_at": "2026-07-12T02:39:09Z",
+                            },
+                            {
+                                "title": "Full reset (Weekly + 5 hr)",
+                                "status": "available",
+                                "expires_at": "2026-07-18T01:00:00Z",
+                            },
+                            {
+                                "title": "Full reset (Weekly + 5 hr)",
+                                "status": "available",
+                                "expires_at": "2026-07-27T01:00:00Z",
+                            },
+                            {
+                                "title": "Full reset (Weekly + 5 hr)",
+                                "status": "available",
+                                "expires_at": "2026-07-31T01:00:00Z",
+                            },
                         ],
                     },
                 },
@@ -423,7 +551,11 @@ class AppTests(unittest.TestCase):
     def test_build_tray_tooltip_compacts_raw_codexbar_payload_to_meaningful_lines(self):
         payload = [
             {
-                "credits": {"events": [], "remaining": 0, "updatedAt": "2026-07-04T04:24:16Z"},
+                "credits": {
+                    "events": [],
+                    "remaining": 0,
+                    "updatedAt": "2026-07-04T04:24:16Z",
+                },
                 "pace": {
                     "primary": {
                         "deltaPercent": -66,
@@ -465,7 +597,11 @@ class AppTests(unittest.TestCase):
                             },
                         }
                     ],
-                    "identity": {"accountEmail": "person@example.com", "loginMethod": "pro", "providerID": "codex"},
+                    "identity": {
+                        "accountEmail": "person@example.com",
+                        "loginMethod": "pro",
+                        "providerID": "codex",
+                    },
                     "loginMethod": "pro",
                     "primary": {
                         "resetDescription": "tomorrow, 1:03 AM",
@@ -473,7 +609,11 @@ class AppTests(unittest.TestCase):
                         "usedPercent": 1,
                         "windowMinutes": 300,
                     },
-                    "secondary": {"resetDescription": "Jul 6 at 10:01 PM", "usedPercent": 7, "windowMinutes": 10080},
+                    "secondary": {
+                        "resetDescription": "Jul 6 at 10:01 PM",
+                        "usedPercent": 7,
+                        "windowMinutes": 10080,
+                    },
                     "tertiary": None,
                     "updatedAt": "2026-07-04T04:24:16Z",
                 },

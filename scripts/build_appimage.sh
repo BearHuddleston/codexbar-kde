@@ -81,6 +81,8 @@ SITE_PACKAGES="$APPDIR/opt/python3.11/lib/python3.11/site-packages"
 rm -rf "$SITE_PACKAGES/codexbar_kde"
 cp -a "$REPO_ROOT/src/codexbar_kde" "$SITE_PACKAGES/"
 rm -f \
+    "$APPDIR/python3.11.14.desktop" \
+    "$APPDIR/python.png" \
     "$APPDIR/usr/share/applications/python3.11.14.desktop" \
     "$APPDIR/usr/share/metainfo/python3.11.14.appdata.xml"
 mkdir -p \
@@ -93,6 +95,7 @@ cp "$REPO_ROOT/packaging/$DESKTOP_ID.desktop" "$APPDIR/$DESKTOP_ID.desktop"
 cp "$REPO_ROOT/packaging/$DESKTOP_ID.desktop" "$APPDIR/usr/share/applications/"
 cp "$REPO_ROOT/packaging/$DESKTOP_ID.appdata.xml" "$APPDIR/usr/share/metainfo/"
 cp "$REPO_ROOT/assets/codexbar-kde.svg" "$APPDIR/codexbar-kde.svg"
+rm -f "$APPDIR/.DirIcon"
 cp "$REPO_ROOT/assets/codexbar-kde.svg" "$APPDIR/.DirIcon"
 cp "$REPO_ROOT/assets/codexbar-kde.svg" \
     "$APPDIR/usr/share/icons/hicolor/scalable/apps/"

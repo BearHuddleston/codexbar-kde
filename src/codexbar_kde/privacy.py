@@ -34,9 +34,7 @@ _CREDENTIAL_URL_RE = re.compile(
     r"(?P<scheme>https?://)(?P<user>[^/@\s:]+):(?P<password>[^/@\s]+)@",
     re.IGNORECASE,
 )
-_JWT_RE = re.compile(
-    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
-)
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 _PROVIDER_CREDENTIAL_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(?:"
     r"sk-[A-Za-z0-9_-]{16,}|"

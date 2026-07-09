@@ -48,23 +48,45 @@ PAYLOAD = [
         "usage": {
             "accountEmail": "person@example.com",
             "loginMethod": "pro",
-            "primary": {"usedPercent": 36, "windowMinutes": 300, "resetDescription": "tomorrow, 1:03 AM"},
+            "primary": {
+                "usedPercent": 36,
+                "windowMinutes": 300,
+                "resetDescription": "tomorrow, 1:03 AM",
+            },
             "secondary": {"usedPercent": 7, "windowMinutes": 10080},
             "codexResetCredits": {
                 "availableCount": 2,
                 "credits": [
-                    {"id": "RateLimitResetCredit_far", "status": "available",
-                     "title": "Full reset (Weekly + 5 hr)", "expires_at": "2026-08-20T01:00:00Z"},
-                    {"id": "RateLimitResetCredit_soon", "status": "available",
-                     "title": "Full reset (Weekly + 5 hr)", "expires_at": "2026-07-12T02:39:09Z"},
+                    {
+                        "id": "RateLimitResetCredit_far",
+                        "status": "available",
+                        "title": "Full reset (Weekly + 5 hr)",
+                        "expires_at": "2026-08-20T01:00:00Z",
+                    },
+                    {
+                        "id": "RateLimitResetCredit_soon",
+                        "status": "available",
+                        "title": "Full reset (Weekly + 5 hr)",
+                        "expires_at": "2026-07-12T02:39:09Z",
+                    },
                 ],
             },
             "updatedAt": "2026-07-04T04:24:16Z",
         },
-        "pace": {"primary": {"deltaPercent": -30, "expectedUsedPercent": 66, "willLastToReset": True}},
+        "pace": {
+            "primary": {
+                "deltaPercent": -30,
+                "expectedUsedPercent": 66,
+                "willLastToReset": True,
+            }
+        },
         "credits": {"remaining": 0},
     },
-    {"provider": "claude", "source": "oauth", "usage": {"primary": {"usedPercent": 12}}},
+    {
+        "provider": "claude",
+        "source": "oauth",
+        "usage": {"primary": {"usedPercent": 12}},
+    },
     {"provider": "gemini", "source": "auto", "error": {"message": "rate limited"}},
 ]
 
@@ -171,13 +193,15 @@ class UiTests(unittest.TestCase):
         window = self._window()
         panel = window.view_overview.reset_panel
 
-        panel.set_credits([
-            {
-                "id": "expired",
-                "status": "available",
-                "expires_at": "2020-01-01T00:00:00Z",
-            }
-        ])
+        panel.set_credits(
+            [
+                {
+                    "id": "expired",
+                    "status": "available",
+                    "expires_at": "2020-01-01T00:00:00Z",
+                }
+            ]
+        )
 
         self.assertFalse(panel.isVisibleTo(window.view_overview))
         self.assertEqual(panel.credit_count(), 0)
@@ -190,10 +214,18 @@ class UiTests(unittest.TestCase):
             refresh_seconds=3600,
             history_store=self.history,
         )
-        payload = [{"provider": "claude", "source": "oauth", "usage": {"primary": {"usedPercent": 12}}}]
+        payload = [
+            {
+                "provider": "claude",
+                "source": "oauth",
+                "usage": {"primary": {"usedPercent": 12}},
+            }
+        ]
         window.set_providers(normalize_payload(payload), raw_payload=payload)
 
-        self.assertFalse(window.view_overview.reset_panel.isVisibleTo(window.view_overview))
+        self.assertFalse(
+            window.view_overview.reset_panel.isVisibleTo(window.view_overview)
+        )
 
     def test_usage_success_is_persisted_before_result_signal(self):
         events = []
@@ -201,16 +233,16 @@ class UiTests(unittest.TestCase):
             "/usr/bin/codexbar",
             history_store=self.history,
         )
-        worker.finished_with_result.connect(
-            lambda *_: events.append("result")
-        )
+        worker.finished_with_result.connect(lambda *_: events.append("result"))
 
         def record(*args, **kwargs):
             events.append("record")
             return []
 
         with (
-            patch("codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD),
+            patch(
+                "codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD
+            ),
             patch.object(self.history, "record", side_effect=record),
         ):
             worker.run()
@@ -228,7 +260,9 @@ class UiTests(unittest.TestCase):
             return original_record(*args, **kwargs)
 
         with (
-            patch("codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD),
+            patch(
+                "codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD
+            ),
             patch.object(self.history, "record", side_effect=recording),
             patch.object(self.history, "prune", wraps=self.history.prune) as prune,
             patch.object(self.history, "load", wraps=self.history.load) as load,
@@ -248,7 +282,9 @@ class UiTests(unittest.TestCase):
 
     def test_finished_usage_worker_is_released(self):
         window = self._window()
-        with patch("codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD):
+        with patch(
+            "codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD
+        ):
             window.refresh_now()
             self.assertTrue(_wait_until(lambda: window.worker is None))
 

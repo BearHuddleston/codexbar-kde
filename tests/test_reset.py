@@ -19,11 +19,25 @@ from codexbar_kde.reset import (
 
 
 CREDITS = [
-    {"id": "RateLimitResetCredit_b", "status": "available", "expires_at": "2026-07-18T01:00:00Z",
-     "title": "Full reset (Weekly + 5 hr)", "reset_type": "codex_rate_limits"},
-    {"id": "RateLimitResetCredit_a", "status": "available", "expires_at": "2026-07-12T02:39:09Z",
-     "title": "Full reset (Weekly + 5 hr)", "reset_type": "codex_rate_limits"},
-    {"id": "RateLimitResetCredit_used", "status": "redeemed", "expires_at": "2026-07-01T00:00:00Z"},
+    {
+        "id": "RateLimitResetCredit_b",
+        "status": "available",
+        "expires_at": "2026-07-18T01:00:00Z",
+        "title": "Full reset (Weekly + 5 hr)",
+        "reset_type": "codex_rate_limits",
+    },
+    {
+        "id": "RateLimitResetCredit_a",
+        "status": "available",
+        "expires_at": "2026-07-12T02:39:09Z",
+        "title": "Full reset (Weekly + 5 hr)",
+        "reset_type": "codex_rate_limits",
+    },
+    {
+        "id": "RateLimitResetCredit_used",
+        "status": "redeemed",
+        "expires_at": "2026-07-01T00:00:00Z",
+    },
     {"id": "RateLimitResetCredit_nodate", "status": "available"},
 ]
 NOW = dt.datetime(2026, 7, 9, tzinfo=dt.timezone.utc)
@@ -36,23 +50,35 @@ class PickNextExpiringTests(unittest.TestCase):
         self.assertEqual(credit["id"], "RateLimitResetCredit_a")
 
     def test_ignores_non_available_credits(self):
-        credit = pick_next_expiring([
-            {"id": "x", "status": "redeemed", "expires_at": "2026-07-01T00:00:00Z"},
-        ])
+        credit = pick_next_expiring(
+            [
+                {"id": "x", "status": "redeemed", "expires_at": "2026-07-01T00:00:00Z"},
+            ]
+        )
         self.assertIsNone(credit)
 
     def test_credits_without_expiry_sort_last(self):
-        credit = pick_next_expiring([
-            {"id": "nodate", "status": "available"},
-            {"id": "dated", "status": "available", "expires_at": "2026-08-01T00:00:00Z"},
-        ], now=NOW)
+        credit = pick_next_expiring(
+            [
+                {"id": "nodate", "status": "available"},
+                {
+                    "id": "dated",
+                    "status": "available",
+                    "expires_at": "2026-08-01T00:00:00Z",
+                },
+            ],
+            now=NOW,
+        )
         self.assertEqual(credit["id"], "dated")
 
     def test_invalid_expiry_is_not_treated_as_nonexpiring(self):
-        credit = pick_next_expiring([
-            {"id": "invalid", "status": "available", "expires_at": "not-a-date"},
-            {"id": "nodate", "status": "available"},
-        ], now=NOW)
+        credit = pick_next_expiring(
+            [
+                {"id": "invalid", "status": "available", "expires_at": "not-a-date"},
+                {"id": "nodate", "status": "available"},
+            ],
+            now=NOW,
+        )
 
         self.assertIsNotNone(credit)
         self.assertEqual(credit.get("id") if credit else None, "nodate")
@@ -61,36 +87,61 @@ class PickNextExpiringTests(unittest.TestCase):
         self.assertIsNone(pick_next_expiring([]))
 
     def test_expired_available_credit_is_ignored(self):
-        credit = pick_next_expiring([
-            {"id": "expired", "status": "available", "expires_at": "2026-07-08T00:00:00Z"},
-            {"id": "future", "status": "available", "expires_at": "2026-08-01T00:00:00Z"},
-        ], now=NOW)
+        credit = pick_next_expiring(
+            [
+                {
+                    "id": "expired",
+                    "status": "available",
+                    "expires_at": "2026-07-08T00:00:00Z",
+                },
+                {
+                    "id": "future",
+                    "status": "available",
+                    "expires_at": "2026-08-01T00:00:00Z",
+                },
+            ],
+            now=NOW,
+        )
 
         self.assertIsNotNone(credit)
         self.assertEqual(credit["id"], "future")
 
     def test_overflowing_utc_conversion_is_ignored(self):
-        credit = pick_next_expiring([
-            {
-                "id": "overflow",
-                "status": "available",
-                "expires_at": "0001-01-01T00:00:00+23:59",
-            },
-            {
-                "id": "future",
-                "status": "available",
-                "expires_at": "2026-08-01T00:00:00Z",
-            },
-        ], now=NOW)
+        credit = pick_next_expiring(
+            [
+                {
+                    "id": "overflow",
+                    "status": "available",
+                    "expires_at": "0001-01-01T00:00:00+23:59",
+                },
+                {
+                    "id": "future",
+                    "status": "available",
+                    "expires_at": "2026-08-01T00:00:00Z",
+                },
+            ],
+            now=NOW,
+        )
 
         self.assertIsNotNone(credit)
         self.assertEqual(credit.get("id") if credit else None, "future")
 
     def test_expiries_are_ordered_as_utc_instants(self):
-        credit = pick_next_expiring([
-            {"id": "later", "status": "available", "expires_at": "2026-07-10T00:00:00-10:00"},
-            {"id": "earlier", "status": "available", "expires_at": "2026-07-10T05:00:00+00:00"},
-        ], now=NOW)
+        credit = pick_next_expiring(
+            [
+                {
+                    "id": "later",
+                    "status": "available",
+                    "expires_at": "2026-07-10T00:00:00-10:00",
+                },
+                {
+                    "id": "earlier",
+                    "status": "available",
+                    "expires_at": "2026-07-10T05:00:00+00:00",
+                },
+            ],
+            now=NOW,
+        )
 
         self.assertIsNotNone(credit)
         self.assertEqual(credit["id"], "earlier")
@@ -100,9 +151,13 @@ class LoadAuthTests(unittest.TestCase):
     def test_loads_token_and_account_id_from_codex_home(self):
         with tempfile.TemporaryDirectory() as tmp:
             auth = Path(tmp) / "auth.json"
-            auth.write_text(json.dumps({
-                "tokens": {"access_token": "tok123", "account_id": "acc456"},
-            }))
+            auth.write_text(
+                json.dumps(
+                    {
+                        "tokens": {"access_token": "tok123", "account_id": "acc456"},
+                    }
+                )
+            )
             token, account_id = load_codex_auth(auth)
         self.assertEqual(token, "tok123")
         self.assertEqual(account_id, "acc456")
@@ -129,14 +184,18 @@ class LoadAuthTests(unittest.TestCase):
     def test_non_string_credentials_fall_back_to_valid_nested_values(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "auth.json"
-            path.write_text(json.dumps({
-                "access_token": 123,
-                "account_id": True,
-                "tokens": {
-                    "access_token": " nested-token ",
-                    "account_id": " nested-account ",
-                },
-            }))
+            path.write_text(
+                json.dumps(
+                    {
+                        "access_token": 123,
+                        "account_id": True,
+                        "tokens": {
+                            "access_token": " nested-token ",
+                            "account_id": " nested-account ",
+                        },
+                    }
+                )
+            )
 
             self.assertEqual(
                 load_codex_auth(path),
@@ -146,11 +205,15 @@ class LoadAuthTests(unittest.TestCase):
     def test_malformed_or_blank_credentials_raise_auth_error(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "auth.json"
-            path.write_text(json.dumps({
-                "access_token": ["not", "a", "token"],
-                "account_id": "   ",
-                "tokens": {"access_token": False, "account_id": {}},
-            }))
+            path.write_text(
+                json.dumps(
+                    {
+                        "access_token": ["not", "a", "token"],
+                        "account_id": "   ",
+                        "tokens": {"access_token": False, "account_id": {}},
+                    }
+                )
+            )
 
             with self.assertRaises(CodexAuthError):
                 load_codex_auth(path)
@@ -175,7 +238,9 @@ class RequestSecurityTests(unittest.TestCase):
         class RedirectHandler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(302)
-                self.send_header("Location", f"http://localhost:{target.server_port}/capture")
+                self.send_header(
+                    "Location", f"http://localhost:{target.server_port}/capture"
+                )
                 self.end_headers()
 
             def log_message(self, format, *args):
@@ -276,11 +341,17 @@ class ConsumeTests(unittest.TestCase):
             status = 200
 
             def read(self, size=-1):
-                payload = json.dumps({
-                    "code": "reset", "windows_reset": 1,
-                    "credit": {"id": "RateLimitResetCredit_a", "status": "redeemed",
-                               "redeemed_at": "2026-07-04T12:00:00Z"},
-                }).encode()
+                payload = json.dumps(
+                    {
+                        "code": "reset",
+                        "windows_reset": 1,
+                        "credit": {
+                            "id": "RateLimitResetCredit_a",
+                            "status": "redeemed",
+                            "redeemed_at": "2026-07-04T12:00:00Z",
+                        },
+                    }
+                ).encode()
                 return payload if size < 0 else payload[:size]
 
             def __enter__(self):
@@ -348,8 +419,12 @@ class ConsumeTests(unittest.TestCase):
             "credit": {"id": "RateLimitResetCredit_a", "status": "redeemed"},
         }
         with (
-            patch.object(reset, "list_reset_credits", return_value={"credits": [available]}) as listed,
-            patch.object(reset, "consume_reset_credit", return_value=consumed) as consumed_call,
+            patch.object(
+                reset, "list_reset_credits", return_value={"credits": [available]}
+            ) as listed,
+            patch.object(
+                reset, "consume_reset_credit", return_value=consumed
+            ) as consumed_call,
         ):
             result = reset.redeem_reset_credit(
                 "tok123",
@@ -455,11 +530,13 @@ class ConsumeTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
-        responses = iter((
-            FakeResponse({"credits": [available]}),
-            FakeResponse(failure=TimeoutError("timed out after POST")),
-            FakeResponse({"credits": [redeemed]}),
-        ))
+        responses = iter(
+            (
+                FakeResponse({"credits": [available]}),
+                FakeResponse(failure=TimeoutError("timed out after POST")),
+                FakeResponse({"credits": [redeemed]}),
+            )
+        )
         methods = []
 
         def fake_open(req, *, timeout):
