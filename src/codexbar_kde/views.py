@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 
 from .history import BurnDown, SeriesPoint
 from .model import ProviderUsage, parse_iso_datetime, severity_for_percent
+from .privacy import redact_text
 from .reset import available_reset_credits, format_expiry, pick_next_expiring
 
 # ---------------------------------------------------------------- palette
@@ -313,6 +314,8 @@ class ResetCreditPanel(QFrame):
         layout.addWidget(self.status_line)
         self._credits: list[dict] = []
         self._target_id: str = ""
+        self._privacy_mode = True
+        self._status_message = ""
         self.hide()
 
     def credit_count(self) -> int:
@@ -321,9 +324,37 @@ class ResetCreditPanel(QFrame):
     def target_credit_id(self) -> str:
         return self._target_id
 
-    def set_credits(self, credits: list[dict]) -> None:
+    def _render_credit_lines(self) -> None:
+        lines = []
+        for credit in sorted(
+            self._credits,
+            key=lambda candidate: str(candidate.get("expires_at") or "~"),
+        ):
+            title = redact_text(
+                str(credit.get("title") or "Reset credit"),
+                redact_emails=self._privacy_mode,
+            )
+            note = format_expiry(credit)
+            marker = "→ " if credit.get("id") == self._target_id else "   "
+            lines.append(f"{marker}{title}" + (f" · {note}" if note else ""))
+        self.credit_lines.setText("\n".join(lines))
+
+    def set_privacy_mode(self, enabled: bool) -> None:
+        self._privacy_mode = bool(enabled)
+        self._render_credit_lines()
+        if self._status_message:
+            self.status_line.setText(
+                redact_text(
+                    self._status_message,
+                    redact_emails=self._privacy_mode,
+                )
+            )
+
+    def set_credits(self, credits: list[dict], *, privacy_mode: bool = True) -> None:
+        self._privacy_mode = bool(privacy_mode)
         candidates = [c for c in credits if isinstance(c, dict)]
         self._credits = available_reset_credits(candidates)
+        self._status_message = ""
         available = self._credits
         if not available:
             self._target_id = ""
@@ -337,13 +368,7 @@ class ResetCreditPanel(QFrame):
         target = pick_next_expiring(available)
         self._target_id = str(target.get("id") or "") if target else ""
         self.count_label.setText(f"{len(available)} available")
-        lines = []
-        for credit in sorted(available, key=lambda c: str(c.get("expires_at") or "~")):
-            title = str(credit.get("title") or "Reset credit")
-            note = format_expiry(credit)
-            marker = "→ " if credit.get("id") == self._target_id else "   "
-            lines.append(f"{marker}{title}" + (f" · {note}" if note else ""))
-        self.credit_lines.setText("\n".join(lines))
+        self._render_credit_lines()
         if target:
             note = format_expiry(target)
             self.redeem_button.setText(
@@ -356,15 +381,19 @@ class ResetCreditPanel(QFrame):
     def set_busy(self, busy: bool, message: str = "") -> None:
         self.redeem_button.setEnabled(not busy and bool(self._target_id))
         if message:
-            self.status_line.setText(message)
+            self._status_message = message
+            self.status_line.setText(
+                redact_text(message, redact_emails=self._privacy_mode)
+            )
             self.status_line.show()
 
     def show_result(self, message: str, *, ok: bool) -> None:
+        self._status_message = message
         color = "#8fd3a8" if ok else "#ff9b9b"
         self.status_line.setStyleSheet(
             f"color: {color}; font-size: 11px; background: transparent;"
         )
-        self.status_line.setText(message)
+        self.status_line.setText(redact_text(message, redact_emails=self._privacy_mode))
         self.status_line.show()
 
     def _emit_redeem(self) -> None:
@@ -395,14 +424,24 @@ class OverviewView(QWidget):
         self._layout.setSpacing(0)
         self.scroll_area.setWidget(self._host)
         self._summary_parts: list[str] = []
+        self._privacy_mode = True
+
+    def _safe_text(self, value: object) -> str:
+        return redact_text(str(value), redact_emails=self._privacy_mode)
 
     def summary_text(self) -> str:
         return "\n".join(self._summary_parts)
 
-    def set_reset_credits(self, credits: list[dict]) -> None:
-        self.reset_panel.set_credits(credits)
+    def set_reset_credits(
+        self, credits: list[dict], *, privacy_mode: bool = True
+    ) -> None:
+        self.reset_panel.set_credits(credits, privacy_mode=privacy_mode)
 
-    def set_providers(self, providers: list[ProviderUsage]) -> None:
+    def set_providers(
+        self, providers: list[ProviderUsage], *, privacy_mode: bool = True
+    ) -> None:
+        self._privacy_mode = bool(privacy_mode)
+        self.reset_panel.set_privacy_mode(self._privacy_mode)
         while self._layout.count():
             item = self._layout.takeAt(0)
             widget = item.widget() if item is not None else None
@@ -438,13 +477,14 @@ class OverviewView(QWidget):
             f"color: {'#ff6b6b' if provider.error else accent}; font-size: 11px; background: transparent;"
         )
         head.addWidget(dot)
-        title = _label(provider.display_name, size=16, weight=700)
+        safe_name = self._safe_text(provider.display_name)
+        title = _label(safe_name, size=16, weight=700)
         head.addWidget(title)
         meta_bits = [
             bit
             for bit in (
-                provider.source,
-                f"v{provider.version}" if provider.version else "",
+                self._safe_text(provider.source) if provider.source else "",
+                self._safe_text(f"v{provider.version}") if provider.version else "",
             )
             if bit
         ]
@@ -463,13 +503,14 @@ class OverviewView(QWidget):
             )
         layout.addLayout(head)
         layout.addWidget(hairline())
-        self._summary_parts.append(provider.display_name)
+        self._summary_parts.append(safe_name)
 
         if provider.error:
-            err = _label(f"Error: {provider.error}", size=12, color="#ff9b9b")
+            safe_error = self._safe_text(provider.error)
+            err = _label(f"Error: {safe_error}", size=12, color="#ff9b9b")
             err.setWordWrap(True)
             layout.addWidget(err)
-            self._summary_parts.append(provider.error)
+            self._summary_parts.append(safe_error)
             return box
 
         for window in provider.windows:
@@ -485,14 +526,14 @@ class OverviewView(QWidget):
         row = QVBoxLayout()
         row.setSpacing(4)
         top = QHBoxLayout()
-        top.addWidget(_label(window.label, size=12, weight=600))
+        top.addWidget(_label(self._safe_text(window.label), size=12, weight=600))
         top.addStretch(1)
         left = 100 - window.used_percent
         value_bits = [f"{left:.0f}% left"]
         if window.reset_countdown:
             value_bits.append(f"resets in {window.reset_countdown}")
         elif window.reset_description:
-            value_bits.append(window.reset_description)
+            value_bits.append(self._safe_text(window.reset_description))
         top.addWidget(_label("  ·  ".join(value_bits), size=12, color=MUTED))
         row.addLayout(top)
         bar = QProgressBar()

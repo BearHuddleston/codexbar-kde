@@ -84,6 +84,8 @@ Version definition section '.gnu.version_d' contains 1 entry:
         self.assertIn("libxkbcommon-x11-0", workflow)
         self.assertIn("libxcb-cursor0", workflow)
         self.assertIn("scripts/build_appimage.sh", workflow)
+        self.assertIn("--test-render", workflow)
+        self.assertIn("--codexbar-bin /tmp/fake-codexbar", workflow)
         self.assertIn("APPIMAGE_OFFLINE: 1", workflow)
         self.assertIn("cmp ", workflow)
         self.assertIn("scripts/audit_appimage.py", workflow)

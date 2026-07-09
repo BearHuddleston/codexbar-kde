@@ -1,3 +1,4 @@
+import datetime as dt
 import os
 import subprocess
 import sys
@@ -11,10 +12,16 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QCoreApplication, QEvent
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QLabel, QMessageBox
 
-from codexbar_kde.app import DashboardWindow, RedeemWorker, UsageWorker
-from codexbar_kde.history import HistoryStore
+from codexbar_kde.app import (
+    _CommandCancelled,
+    _run_codexbar_command,
+    DashboardWindow,
+    RedeemWorker,
+    UsageWorker,
+)
+from codexbar_kde.history import HistoryStore, Sample
 from codexbar_kde.model import normalize_payload
 
 
@@ -34,9 +41,10 @@ def _wait_until(predicate, timeout=3.0):
 
 def _process_alive(pid):
     stat_path = Path(f"/proc/{pid}/stat")
-    if not stat_path.exists():
+    try:
+        fields = stat_path.read_text().split()
+    except OSError:
         return False
-    fields = stat_path.read_text().split()
     return len(fields) > 2 and fields[2] != "Z"
 
 
@@ -138,6 +146,107 @@ class UiTests(unittest.TestCase):
         self.assertIn("Claude", text)
         self.assertIn("Gemini", text)
         self.assertIn("rate limited", text)
+
+    def test_overview_redacts_credentials_and_respects_identity_privacy(self):
+        payload = [
+            {
+                "provider": "codex",
+                "source": "token=SOURCE_SECRET_123456 source@example.com",
+                "usage": {
+                    "primary": {
+                        "label": "token=LABEL_SECRET_123456 selector@example.com",
+                        "usedPercent": 12,
+                        "resetDescription": (
+                            "token=RESET_SECRET_123456 reset@example.com"
+                        ),
+                    },
+                    "codexResetCredits": {
+                        "availableCount": 1,
+                        "credits": [
+                            {
+                                "id": "RateLimitResetCredit_private",
+                                "status": "available",
+                                "title": (
+                                    "token=CREDIT_SECRET_123456 credit@example.com"
+                                ),
+                                "expires_at": "2026-08-01T00:00:00Z",
+                            }
+                        ],
+                    },
+                },
+            }
+        ]
+        window = DashboardWindow(refresh_seconds=3600, history_store=self.history)
+        self.addCleanup(window.close)
+        window.set_providers(
+            normalize_payload(payload),
+            error="token=ERROR_SECRET_123456 error@example.com",
+            raw_payload=payload,
+        )
+
+        def visible_text():
+            overview = "\n".join(
+                label.text() for label in window.view_overview.findChildren(QLabel)
+            )
+            selectors = "\n".join(
+                (
+                    window.view_history.selector.itemText(0),
+                    window.view_burndown.selector.itemText(0),
+                )
+            )
+            return "\n".join((overview, selectors, window.error_label.text()))
+
+        private_text = visible_text()
+        for secret in (
+            "SOURCE_SECRET_123456",
+            "LABEL_SECRET_123456",
+            "RESET_SECRET_123456",
+            "CREDIT_SECRET_123456",
+            "ERROR_SECRET_123456",
+        ):
+            self.assertNotIn(secret, private_text)
+        for email in (
+            "source@example.com",
+            "selector@example.com",
+            "reset@example.com",
+            "credit@example.com",
+            "error@example.com",
+        ):
+            self.assertNotIn(email, private_text)
+
+        panel = window.view_overview.reset_panel
+        panel.set_busy(True, "Redeeming…")
+        self.assertFalse(panel.redeem_button.isEnabled())
+        self.assertFalse(panel.status_line.isHidden())
+
+        window.set_privacy_mode(False)
+
+        self.assertFalse(panel.redeem_button.isEnabled())
+        self.assertFalse(panel.status_line.isHidden())
+        self.assertEqual(panel.status_line.text(), "Redeeming…")
+        panel.show_result(
+            "token=RESULT_SECRET_123456 result@example.com",
+            ok=False,
+        )
+        revealed_text = visible_text()
+        for email in (
+            "source@example.com",
+            "selector@example.com",
+            "reset@example.com",
+            "credit@example.com",
+            "error@example.com",
+            "result@example.com",
+        ):
+            self.assertIn(email, revealed_text)
+        for secret in (
+            "SOURCE_SECRET_123456",
+            "LABEL_SECRET_123456",
+            "RESET_SECRET_123456",
+            "CREDIT_SECRET_123456",
+            "ERROR_SECRET_123456",
+            "RESULT_SECRET_123456",
+        ):
+            self.assertNotIn(secret, revealed_text)
 
     def test_details_view_shows_compact_provider_fields(self):
         window = self._window()
@@ -316,6 +425,51 @@ class UiTests(unittest.TestCase):
         QApplication.processEvents()
         self.assertEqual(window.findChildren(RedeemWorker), [])
 
+    def test_stale_worker_cleanup_cannot_clear_a_new_worker(self):
+        window = self._window()
+        old_usage = UsageWorker("/old", window)
+        new_usage = UsageWorker("/new", window)
+        window.worker = new_usage
+
+        window._usage_worker_stopped(old_usage)
+
+        self.assertIs(window.worker, new_usage)
+
+        old_redeem = RedeemWorker("old", window)
+        new_redeem = RedeemWorker("new", window)
+        window.redeem_worker = new_redeem
+
+        window._redeem_worker_stopped(old_redeem)
+
+        self.assertIs(window.redeem_worker, new_redeem)
+
+    def test_finished_worker_reference_remains_reserved_until_cleanup(self):
+        window = self._window()
+        old_worker = UsageWorker("/old", window)
+        window.worker = old_worker
+
+        with patch.object(UsageWorker, "start") as start:
+            window.refresh_now()
+
+        start.assert_not_called()
+        self.assertIs(window.worker, old_worker)
+
+    def test_preloaded_history_samples_populate_charts_without_refresh(self):
+        sample = Sample(
+            ts=dt.datetime.now(dt.timezone.utc),
+            provider="codex",
+            windows={"primary": 36.0},
+        )
+        window = DashboardWindow(
+            refresh_seconds=3600,
+            history_store=self.history,
+            history_samples=[sample],
+        )
+        window.set_providers(normalize_payload(PAYLOAD), raw_payload=PAYLOAD)
+
+        self.assertEqual(window._history_samples, [sample])
+        self.assertNotEqual(window.view_history.summary.text(), "No recorded days yet")
+
     def test_shutdown_waits_for_active_redeem_worker(self):
         window = self._window()
         result = {
@@ -374,6 +528,56 @@ class UiTests(unittest.TestCase):
                 for pid in pids:
                     if _process_alive(pid):
                         os.kill(pid, 9)
+
+    def test_timeout_kills_descendant_after_process_group_leader_exits(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pid_path = root / "child.pid"
+            script = root / "codexbar"
+            script.write_text(
+                "#!/usr/bin/python3\n"
+                "import pathlib, signal, subprocess, sys\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n"
+            )
+            script.chmod(0o755)
+            child_pid = None
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    _run_codexbar_command([str(script)], timeout=0.2)
+                child_pid = int(pid_path.read_text())
+                self.assertTrue(_wait_until(lambda: not _process_alive(child_pid)))
+            finally:
+                if child_pid is not None and _process_alive(child_pid):
+                    os.kill(child_pid, 9)
+
+    def test_cancel_kills_descendant_after_process_group_leader_exits(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pid_path = root / "child.pid"
+            script = root / "codexbar"
+            script.write_text(
+                "#!/usr/bin/python3\n"
+                "import pathlib, signal, subprocess, sys\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid))\n"
+            )
+            script.chmod(0o755)
+            child_pid = None
+            try:
+                with self.assertRaises(_CommandCancelled):
+                    _run_codexbar_command(
+                        [str(script)],
+                        timeout=30,
+                        cancel_requested=pid_path.exists,
+                    )
+                child_pid = int(pid_path.read_text())
+                self.assertTrue(_wait_until(lambda: not _process_alive(child_pid)))
+            finally:
+                if child_pid is not None and _process_alive(child_pid):
+                    os.kill(child_pid, 9)
 
     def test_application_quit_with_active_worker_exits_cleanly(self):
         with tempfile.TemporaryDirectory() as td:

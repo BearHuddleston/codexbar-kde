@@ -157,6 +157,20 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(minutes["primary"], 300)
         self.assertEqual(minutes["secondary"], 10080)
 
+    def test_normalize_payload_rejects_impractical_window_minutes(self):
+        payload = {
+            "provider": "codex",
+            "usage": {
+                "primary": {"usedPercent": 5, "windowMinutes": 10**5000},
+                "secondary": {"usedPercent": 7, "windowMinutes": 1e308},
+            },
+        }
+
+        providers = normalize_payload(payload)
+
+        self.assertIsNone(providers[0].windows[0].window_minutes)
+        self.assertIsNone(providers[0].windows[1].window_minutes)
+
     def test_normalize_payload_keeps_provider_errors_as_cards(self):
         providers = normalize_payload(
             {

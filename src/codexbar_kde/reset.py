@@ -305,15 +305,18 @@ def redeem_reset_credit(
             ),
             None,
         )
+        if matched is not None and matched.get("status") == "redeemed":
+            return {
+                "code": "reset",
+                "windows_reset": None,
+                "credit": matched,
+                "reconciled": True,
+            }
         if matched is not None and pick_next_expiring([matched], now=now) is not None:
             raise consume_error
-        reconciled_credit = matched or {"id": credit_id, "status": "unavailable"}
-        return {
-            "code": "reset",
-            "windows_reset": None,
-            "credit": reconciled_credit,
-            "reconciled": True,
-        }
+        raise CodexResetError(
+            f"{consume_error}; redemption outcome uncertain; refresh before retrying"
+        ) from consume_error
 
 
 def credits_from_usage_payload(raw_payload: object) -> list[dict[str, Any]]:

@@ -587,7 +587,7 @@ class ConsumeTests(unittest.TestCase):
         self.assertEqual(listed.call_count, 2)
         consumed.assert_called_once()
 
-    def test_redeem_reconciles_if_credit_disappears_after_consume_failure(self):
+    def test_redeem_reports_uncertain_if_credit_disappears_after_consume_failure(self):
         from codexbar_kde import reset
 
         available = {
@@ -607,17 +607,48 @@ class ConsumeTests(unittest.TestCase):
                 side_effect=CodexResetError("network error after POST"),
             ),
         ):
-            result = reset.redeem_reset_credit(
-                "tok123",
-                "acc456",
-                "RateLimitResetCredit_a",
-                now=NOW,
-            )
+            with self.assertRaisesRegex(CodexResetError, "outcome uncertain"):
+                reset.redeem_reset_credit(
+                    "tok123",
+                    "acc456",
+                    "RateLimitResetCredit_a",
+                    now=NOW,
+                )
 
         self.assertEqual(listed.call_count, 2)
-        self.assertTrue(result["reconciled"])
-        self.assertEqual(result["credit"]["id"], "RateLimitResetCredit_a")
-        self.assertEqual(result["credit"]["status"], "unavailable")
+
+    def test_redeem_reports_uncertain_for_non_redeemed_terminal_status(self):
+        from codexbar_kde import reset
+
+        available = {
+            "id": "RateLimitResetCredit_a",
+            "status": "available",
+            "expires_at": "2026-08-01T00:00:00Z",
+        }
+        for status in ("expired", "revoked", "unknown"):
+            with self.subTest(status=status):
+                with (
+                    patch.object(
+                        reset,
+                        "list_reset_credits",
+                        side_effect=[
+                            {"credits": [available]},
+                            {"credits": [{"id": available["id"], "status": status}]},
+                        ],
+                    ),
+                    patch.object(
+                        reset,
+                        "consume_reset_credit",
+                        side_effect=CodexResetError("network error after POST"),
+                    ),
+                ):
+                    with self.assertRaisesRegex(CodexResetError, "outcome uncertain"):
+                        reset.redeem_reset_credit(
+                            "tok123",
+                            "acc456",
+                            available["id"],
+                            now=NOW,
+                        )
 
 
 if __name__ == "__main__":

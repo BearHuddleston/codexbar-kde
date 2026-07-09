@@ -17,6 +17,7 @@ from codexbar_kde.app import (
     provider_summary_lines,
     redact_text,
     RedeemWorker,
+    run_test_render,
 )
 
 
@@ -42,6 +43,9 @@ class AppTests(unittest.TestCase):
                 "--pretty",
             ],
         )
+
+    def test_render_smoke_does_not_require_an_external_codexbar(self):
+        self.assertEqual(run_test_render("/definitely/missing/codexbar"), 0)
 
     def test_modern_ui_helpers_use_provider_accents_and_thin_meters(self):
         self.assertEqual(provider_accent_color("codex"), "#7170ff")
@@ -247,6 +251,23 @@ class AppTests(unittest.TestCase):
         self.assertNotIn(secret, summary)
         self.assertNotIn(secret, tooltip)
 
+    def test_payload_formatter_preserves_nested_account_email_opt_out(self):
+        payload = [
+            {
+                "provider": "codex",
+                "usage": {
+                    "identity": {"accountEmail": "nested@example.com"},
+                    "primary": {"usedPercent": 12},
+                },
+            }
+        ]
+
+        private_text = "\n".join(format_payload_lines(payload))
+        revealed_text = "\n".join(format_payload_lines(payload, privacy_mode=False))
+
+        self.assertNotIn("nested@example.com", private_text)
+        self.assertIn("nested@example.com", revealed_text)
+
     def test_payload_formatter_rejects_nonfinite_and_overflowing_percentages(self):
         payload = [
             {
@@ -254,6 +275,11 @@ class AppTests(unittest.TestCase):
                 "usage": {
                     "primary": {"usedPercent": 10**5000},
                     "secondary": {"usedPercent": "NaN"},
+                    "codexResetCredits": {"availableCount": 10**5000},
+                },
+                "pace": {
+                    "primary": {"deltaPercent": 10**5000},
+                    "secondary": {"deltaPercent": float("inf")},
                 },
             }
         ]
@@ -293,6 +319,11 @@ class AppTests(unittest.TestCase):
             "OpenAI key sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456": "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
             "Anthropic key sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456": "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
             "Gemini key AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ123456789": "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ123456789",
+            "AWS_ACCESS_KEY_ID=REVIEW_AWS_ID_123456": "REVIEW_AWS_ID_123456",
+            "AWS_SECRET_ACCESS_KEY=REVIEW_AWS_SECRET_123456": "REVIEW_AWS_SECRET_123456",
+            "OPENAI_API_KEY=REVIEW_OPENAI_KEY_123456": "REVIEW_OPENAI_KEY_123456",
+            "ANTHROPIC_AUTH_TOKEN=REVIEW_ANTHROPIC_TOKEN_123456": "REVIEW_ANTHROPIC_TOKEN_123456",
+            "GITHUB_TOKEN=REVIEW_GITHUB_TOKEN_123456": "REVIEW_GITHUB_TOKEN_123456",
         }
         for text, secret in cases.items():
             with self.subTest(text=text):

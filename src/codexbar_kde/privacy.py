@@ -16,16 +16,21 @@ _AUTH_HEADER_RE = re.compile(
     r"(?P<value>[^\s,;]+)",
     re.IGNORECASE,
 )
+_CREDENTIAL_KEY_PATTERN = (
+    r"(?:[A-Za-z][A-Za-z0-9]*[_-])*"
+    r"(?:access[_-]?token|refresh[_-]?token|auth[_-]?token|session[_-]?token|"
+    r"secret[_-]?access[_-]?key|access[_-]?key[_-]?id|access[_-]?key|"
+    r"client[_-]?secret|private[_-]?key|account[_-]?id|token|secret|password|"
+    r"passwd|cookie|api[_-]?key|authorization)"
+)
 _QUOTED_ASSIGNMENT_RE = re.compile(
-    r"(?P<prefix>\b(?:access[_-]?token|refresh[_-]?token|account[_-]?id|"
-    r"token|secret|password|cookie|api[_-]?key|authorization)"
+    rf"(?P<prefix>\b{_CREDENTIAL_KEY_PATTERN}"
     r"[\"']?\s*[=:]\s*)(?P<quote>[\"'])"
     r"(?P<value>(?:\\.|(?!(?P=quote)).)*)(?P=quote)",
     re.IGNORECASE | re.DOTALL,
 )
 _ASSIGNMENT_RE = re.compile(
-    r"(?P<prefix>\b(?:access[_-]?token|refresh[_-]?token|account[_-]?id|"
-    r"token|secret|password|cookie|api[_-]?key|authorization)"
+    rf"(?P<prefix>\b{_CREDENTIAL_KEY_PATTERN}"
     r"[\"']?\s*[=:]\s*[\"']?)"
     r"(?P<value>(?!\[REDACTED\])[^\s,;}\]\"']+)",
     re.IGNORECASE,
@@ -101,9 +106,10 @@ def redact_credentials(text: str) -> str:
     return _JWT_RE.sub(_REDACTED, result)
 
 
-def redact_text(text: str) -> str:
-    """Redact common credential and identity forms from untrusted text."""
-    return _EMAIL_RE.sub(_REDACTED, redact_credentials(text))
+def redact_text(text: str, *, redact_emails: bool = True) -> str:
+    """Redact credentials and, by default, common identity forms."""
+    redacted = redact_credentials(text)
+    return _EMAIL_RE.sub(_REDACTED, redacted) if redact_emails else redacted
 
 
 def sanitize_structure(value: Any) -> Any:

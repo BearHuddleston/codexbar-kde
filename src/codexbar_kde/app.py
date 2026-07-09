@@ -110,23 +110,43 @@ class _CommandCancelled(RuntimeError):
     pass
 
 
-def _stop_process_group(process: subprocess.Popen[str]) -> None:
+def _process_group_exists(process_group_id: int) -> bool:
     try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _stop_process_group(process: subprocess.Popen[str]) -> None:
+    process_group_id = process.pid
+    try:
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            if process.poll() is None:
+                process.terminate()
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            process.poll()
+            if not _process_group_exists(process_group_id):
+                break
+            time.sleep(0.02)
+
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            if process.poll() is None:
+                process.kill()
+
         if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
             try:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
-                pass
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                if process.poll() is None:
-                    process.kill()
-            if process.poll() is None:
+                process.kill()
                 process.wait()
     finally:
         if process.stdout is not None:
@@ -138,7 +158,7 @@ def _stop_process_group(process: subprocess.Popen[str]) -> None:
 def _run_codexbar_command(
     command: list[str],
     *,
-    timeout: int,
+    timeout: float,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if cancel_requested is not None and cancel_requested():
@@ -302,7 +322,7 @@ def _compact_percent(value: object) -> str:
     return f"{percent:g}%"
 
 
-def _percent_value(value: object) -> float | None:
+def _finite_number(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     try:
@@ -311,9 +331,14 @@ def _percent_value(value: object) -> float | None:
             if isinstance(value, (int, float))
             else float(str(value).strip().rstrip("%"))
         )
-    except (ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    if not math.isfinite(number):
+    return number if math.isfinite(number) else None
+
+
+def _percent_value(value: object) -> float | None:
+    number = _finite_number(value)
+    if number is None:
         return None
     return max(0.0, min(100.0, number))
 
@@ -421,21 +446,22 @@ def _compact_window_block(
 def _compact_pace_line(pace_window: dict[str, object]) -> str | None:
     delta = pace_window.get("deltaPercent")
     expected = pace_window.get("expectedUsedPercent")
-    if delta is None and expected is None:
+    delta_value = _finite_number(delta)
+    if delta_value is not None and not -100.0 <= delta_value <= 100.0:
+        delta_value = None
+    expected_value = _percent_value(expected)
+    bits: list[str] = []
+    if delta_value is not None:
+        if delta_value < 0:
+            bits.append(f"{abs(delta_value):g}% reserve")
+        elif delta_value > 0:
+            bits.append(f"{delta_value:g}% over pace")
+        else:
+            bits.append("on pace")
+    if expected_value is not None:
+        bits.append(f"expected {expected_value:g}%")
+    if not bits:
         return None
-    try:
-        delta_value = float(delta)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        delta_value = 0.0
-    if delta_value < 0:
-        pace_text = f"{abs(delta_value):g}% reserve"
-    elif delta_value > 0:
-        pace_text = f"{delta_value:g}% over pace"
-    else:
-        pace_text = "on pace"
-    bits = [pace_text]
-    if expected is not None:
-        bits.append(f"expected {_compact_percent(expected)}")
     line = " · ".join(bits)
     will_last = pace_window.get("willLastToReset")
     if will_last is True:
@@ -448,12 +474,9 @@ def _compact_pace_line(pace_window: dict[str, object]) -> str | None:
 def _append_compact_reset_credits(
     lines: list[str], reset_credits: dict[str, object]
 ) -> None:
-    available = reset_credits.get("availableCount")
-    if available is not None:
-        count_text = (
-            f"{available:g}" if isinstance(available, (int, float)) else str(available)
-        )
-        lines.append(f"  {nf(NF_RESET, f'Reset credits: {count_text} available')}")
+    available = _finite_number(reset_credits.get("availableCount"))
+    if available is not None and 0 <= available <= 1_000_000:
+        lines.append(f"  {nf(NF_RESET, f'Reset credits: {available:g} available')}")
     groups: dict[tuple[str, str], list[str]] = {}
     for credit in _as_list(reset_credits.get("credits")):
         credit_dict = _as_dict(credit)
@@ -531,7 +554,10 @@ def _compact_provider_lines(
     lines = [nf(NF_OK, f"{header}  {_peak_usage_percent(usage):g}% peak")]
 
     account = (
-        usage.get("accountEmail") or entry.get("accountEmail") or identity.get("email")
+        usage.get("accountEmail")
+        or entry.get("accountEmail")
+        or identity.get("accountEmail")
+        or identity.get("email")
     )
     if account:
         account_text = "[REDACTED]" if privacy_mode else str(account)
@@ -787,6 +813,19 @@ def make_app_icon() -> QIcon:
 # ---------------------------------------------------------------------------
 
 
+def _privacy_window_options(
+    providers: list[ProviderUsage], *, privacy_mode: bool
+) -> list[tuple[str, str, str]]:
+    return [
+        (
+            provider_key,
+            window_key,
+            redact_text(label, redact_emails=privacy_mode),
+        )
+        for provider_key, window_key, label in window_options(providers)
+    ]
+
+
 class DashboardWindow(QMainWindow):
     data_changed = pyqtSignal(object, str, object)
 
@@ -798,6 +837,7 @@ class DashboardWindow(QMainWindow):
         codexbar_bin: str = DEFAULT_CODEXBAR,
         refresh_seconds: int = DEFAULT_REFRESH_SECONDS,
         history_store: HistoryStore | None = None,
+        history_samples: Iterable[Sample] | None = None,
         privacy_mode: bool = True,
     ) -> None:
         super().__init__()
@@ -808,7 +848,10 @@ class DashboardWindow(QMainWindow):
         self.redeem_worker: RedeemWorker | None = None
         self._shutting_down = False
         self.history = history_store or HistoryStore()
-        self._history_samples: list[Sample] = []
+        self._history_samples = sorted(
+            (sample for sample in history_samples or [] if isinstance(sample, Sample)),
+            key=lambda sample: sample.ts,
+        )
         self.providers: list[ProviderUsage] = []
         self.raw_payload: object | None = None
         self.last_error = ""
@@ -997,6 +1040,20 @@ class DashboardWindow(QMainWindow):
     def set_privacy_mode(self, enabled: bool) -> None:
         self.privacy_mode = bool(enabled)
         self.view_details.set_privacy_mode(self.privacy_mode)
+        self.view_overview.set_providers(
+            self.providers,
+            privacy_mode=self.privacy_mode,
+        )
+        options = _privacy_window_options(
+            self.providers,
+            privacy_mode=self.privacy_mode,
+        )
+        self.view_history.set_options(options)
+        self.view_burndown.set_options(options)
+        if self.last_error:
+            self.error_label.setText(
+                redact_text(self.last_error, redact_emails=self.privacy_mode)
+            )
         self._render_details()
         self.data_changed.emit(self.providers, self.last_error, self.raw_payload)
 
@@ -1030,16 +1087,25 @@ class DashboardWindow(QMainWindow):
         self.raw_payload = raw_payload
         self.last_error = error
         self.error_label.setVisible(bool(error))
-        self.error_label.setText(error)
+        self.error_label.setText(redact_text(error, redact_emails=self.privacy_mode))
         if not providers and not error:
             self.error_label.setVisible(True)
             self.error_label.setText(
                 "No providers returned by codexbar. Enable providers with the CodexBar CLI config."
             )
 
-        self.view_overview.set_providers(providers)
-        self.view_overview.set_reset_credits(credits_from_usage_payload(raw_payload))
-        options = window_options(providers)
+        self.view_overview.set_providers(
+            providers,
+            privacy_mode=self.privacy_mode,
+        )
+        self.view_overview.set_reset_credits(
+            credits_from_usage_payload(raw_payload),
+            privacy_mode=self.privacy_mode,
+        )
+        options = _privacy_window_options(
+            providers,
+            privacy_mode=self.privacy_mode,
+        )
         self.view_history.set_options(options)
         self.view_burndown.set_options(options)
         self._update_history_chart()
@@ -1074,9 +1140,7 @@ class DashboardWindow(QMainWindow):
     # ---- reset credits -------------------------------------------------
 
     def _redeem_reset_credit(self, credit_id: str) -> None:
-        if self._shutting_down or (
-            self.redeem_worker and self.redeem_worker.isRunning()
-        ):
+        if self._shutting_down or self.redeem_worker is not None:
             return
         panel = self.view_overview.reset_panel
         confirm = QMessageBox.question(
@@ -1091,10 +1155,13 @@ class DashboardWindow(QMainWindow):
         if confirm != QMessageBox.StandardButton.Yes:
             return
         panel.set_busy(True, "Redeeming…")
-        self.redeem_worker = RedeemWorker(credit_id, self)
-        self.redeem_worker.finished_with_result.connect(self._redeem_finished)
-        self.redeem_worker.finished.connect(self._redeem_worker_stopped)
-        self.redeem_worker.start()
+        worker = RedeemWorker(credit_id, self)
+        self.redeem_worker = worker
+        worker.finished_with_result.connect(self._redeem_finished)
+        worker.finished.connect(
+            lambda worker=worker: self._redeem_worker_stopped(worker)
+        )
+        worker.start()
 
     def _redeem_finished(self, ok: bool, message: str) -> None:
         panel = self.view_overview.reset_panel
@@ -1104,11 +1171,10 @@ class DashboardWindow(QMainWindow):
             # Pull fresh usage so windows and the credit list update.
             self.refresh_now()
 
-    def _redeem_worker_stopped(self) -> None:
-        worker = self.redeem_worker
-        self.redeem_worker = None
-        if worker is not None:
-            worker.deleteLater()
+    def _redeem_worker_stopped(self, worker: RedeemWorker) -> None:
+        if self.redeem_worker is worker:
+            self.redeem_worker = None
+        worker.deleteLater()
 
     def _update_history_chart(self) -> None:
         selection = self.view_history.current_selection()
@@ -1163,22 +1229,25 @@ class DashboardWindow(QMainWindow):
     # ---- refresh -----------------------------------------------------
 
     def refresh_now(self) -> None:
-        if self._shutting_down or (self.worker and self.worker.isRunning()):
+        if self._shutting_down or self.worker is not None:
             return
         self.refresh_button.setEnabled(False)
         self.status_label.setText("Refreshing…")
         self.status_label.setStyleSheet(
             f"color: {MUTED}; font-size: 11px; background: transparent;"
         )
-        self.worker = UsageWorker(
+        worker = UsageWorker(
             self.codexbar_bin,
             self,
             history_store=self.history,
         )
-        self.worker.finished_with_result.connect(self._refresh_finished)
-        self.worker.history_updated.connect(self._history_worker_updated)
-        self.worker.finished.connect(self._usage_worker_stopped)
-        self.worker.start()
+        self.worker = worker
+        worker.finished_with_result.connect(self._refresh_finished)
+        worker.history_updated.connect(self._history_worker_updated)
+        worker.finished.connect(
+            lambda worker=worker: self._usage_worker_stopped(worker)
+        )
+        worker.start()
 
     def _refresh_finished(
         self, providers: object, error: str, raw_payload: object
@@ -1201,11 +1270,10 @@ class DashboardWindow(QMainWindow):
         self._update_history_chart()
         self._update_burndown_chart()
 
-    def _usage_worker_stopped(self) -> None:
-        worker = self.worker
-        self.worker = None
-        if worker is not None:
-            worker.deleteLater()
+    def _usage_worker_stopped(self, worker: UsageWorker) -> None:
+        if self.worker is worker:
+            self.worker = None
+        worker.deleteLater()
 
     def shutdown_workers(self) -> None:
         """Stop cancellable work and wait for irreversible work before teardown."""
@@ -1297,7 +1365,21 @@ def run_once(codexbar_bin: str) -> int:
 def run_test_render(codexbar_bin: str) -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(["codexbar-kde", "--test-render"])
-    raw_payload = load_usage_payload_from_command(codexbar_bin)
+    raw_payload = [
+        {
+            "provider": "codex",
+            "source": "render-smoke",
+            "usage": {
+                "primary": {"usedPercent": 12, "windowMinutes": 300},
+                "secondary": {"usedPercent": 34, "windowMinutes": 10080},
+            },
+        },
+        {
+            "provider": "claude",
+            "source": "render-smoke",
+            "usage": {"primary": {"usedPercent": 23}},
+        },
+    ]
     providers = normalize_payload(raw_payload)
     window = DashboardWindow(codexbar_bin=codexbar_bin, refresh_seconds=3600)
     window.set_providers(providers, raw_payload=raw_payload)

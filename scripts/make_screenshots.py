@@ -219,10 +219,15 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="codexbar-kde-shots-") as tmp:
         store = HistoryStore(Path(tmp) / "history.jsonl")
         seed_history(store)
+        history_samples = store.load()
 
         payload = demo_payload()
         providers = normalize_payload(payload)
-        window = DashboardWindow(refresh_seconds=3600, history_store=store)
+        window = DashboardWindow(
+            refresh_seconds=3600,
+            history_store=store,
+            history_samples=history_samples,
+        )
         window.resize(1180, 720)
         window.set_providers(providers, raw_payload=payload)
         window.show()

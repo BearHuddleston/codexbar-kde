@@ -171,9 +171,12 @@ def _reset_description(window: dict[str, Any]) -> str:
     return ""
 
 
+MAX_WINDOW_MINUTES = 525_600
+
+
 def _window_minutes(window: dict[str, Any]) -> int | None:
     value = _number(window.get("windowMinutes"))
-    if value is None or value <= 0:
+    if value is None or value <= 0 or value > MAX_WINDOW_MINUTES:
         return None
     return int(value)
 
