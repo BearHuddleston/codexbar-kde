@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.BearHuddleston.codexbar_kde</id>
+  <name>CodexBar KDE</name>
+  <summary>Local AI subscription usage dashboard</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>CodexBar KDE displays subscription usage from the host-side CodexBar CLI in a native Qt dashboard and system tray.</p>
+  </description>
+  <launchable type="desktop-id">io.github.BearHuddleston.codexbar_kde.desktop</launchable>
+  <url type="homepage">https://github.com/BearHuddleston/codexbar-kde</url>
+  <provides>
+    <binary>codexbar-kde</binary>
+  </provides>
+</component>

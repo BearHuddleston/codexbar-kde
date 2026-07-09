@@ -77,6 +77,9 @@ Monospace compact dump of every meaningful `codexbar usage` field.
   lines skipped). Charts fill in as history accrues.
 - **Resilient**: provider errors stay inline in Overview without hiding healthy
   providers.
+- **Private by default**: account identity is masked in Details and the tray;
+  the Details toggle can reveal identity deliberately, but credential-like
+  values remain redacted in either mode.
 
 ## Install
 
@@ -88,6 +91,11 @@ chmod +x CodexBar_KDE-x86_64.AppImage
 ./CodexBar_KDE-x86_64.AppImage
 ```
 
+The release AppImage is x86_64 and audited for a maximum `GLIBC_2.28`
+requirement (for example, Debian 10+, Ubuntu 20.04+, and current Arch/CachyOS).
+It intentionally uses the host graphics-dispatch stack, which must provide
+`libEGL.so.1` and `libGL.so.1`, so hardware-specific drivers remain compatible.
+
 **Option B — pip / pipx** (uses your system Qt platform plugins via the PyQt6 wheel):
 
 ```sh
@@ -97,7 +105,8 @@ pipx install git+https://github.com/BearHuddleston/codexbar-kde.git
 Optional desktop integration (launcher entry + icon):
 
 ```sh
-install -Dm644 packaging/codexbar-kde.desktop ~/.local/share/applications/codexbar-kde.desktop
+install -Dm644 packaging/io.github.BearHuddleston.codexbar_kde.desktop \
+  ~/.local/share/applications/io.github.BearHuddleston.codexbar_kde.desktop
 install -Dm644 assets/codexbar-kde.svg ~/.local/share/icons/hicolor/scalable/apps/codexbar-kde.svg
 kbuildsycoca6 --noincremental   # KDE: refresh the launcher cache
 ```
@@ -147,8 +156,9 @@ Useful flags:
 - Does **not** read provider token/cookie files directly.
 - Does **not** store credentials.
 - Local cost/log scanning is **not** used.
-- Account identity can appear in the tray tooltip because the user explicitly asked
-  to display meaningful fields from their own `codexbar usage` output.
+- Account identity is masked by default in Details and the tray tooltip. The
+  Details-view privacy toggle can reveal identity, but credential-like values
+  remain redacted regardless of that toggle.
 
 ## Notes on tray tooltips
 
@@ -166,14 +176,31 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m unittest discover -s tests -v
 # Regenerate the README screenshots (synthetic data only — nothing personal leaks)
 QT_QPA_PLATFORM=offscreen python scripts/make_screenshots.py
 
-# Build a self-contained AppImage (bundles Python + PyQt6, ~74 MB)
+# Build a self-contained x86_64 AppImage (bundles Python + PyQt6, ~92 MB)
 bash scripts/build_appimage.sh
 # → dist/CodexBar_KDE-x86_64.AppImage
+
+# Audit undefined ABI requirements in every embedded ELF plus the runtime
+python scripts/audit_appimage.py dist/CodexBar_KDE-x86_64.AppImage
 ```
 
 The AppImage bundles the Python runtime and PyQt6 but **not** the `codexbar`
 CLI itself — it still expects `/usr/bin/codexbar` on the host (or pass
 `--codexbar-bin PATH`).
+
+The build uses checksum-pinned Python 3.11.14 manylinux_2_28 and appimagetool
+1.9.1 assets plus three hash-locked PyQt6 wheels. Downloads are cached under
+`${XDG_CACHE_HOME:-~/.cache}/codexbar-kde-appimage`; after one successful build,
+`APPIMAGE_OFFLINE=1 bash scripts/build_appimage.sh` requires a complete verified
+cache and performs no downloads. `SOURCE_DATE_EPOCH` defaults to the current Git
+commit timestamp. CI builds twice, requires byte-identical output, smoke-tests
+the final AppImage, and enforces `GLIBC_2.28`, `GLIBCXX_3.4.22`, and
+`CXXABI_1.3.11` ceilings.
+
+The project source is MIT-licensed. The AppImage also bundles PyQt6 and Qt
+components under their upstream licenses (including GPL/commercial terms for
+PyQt6); upstream license metadata and files shipped in those wheels, plus this
+project's `LICENSE`, are preserved inside the artifact.
 
 Layout:
 

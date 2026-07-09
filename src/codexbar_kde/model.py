@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
+import re
 from dataclasses import dataclass
 from typing import Any
+
+from .privacy import redact_text, sanitize_structure
 
 
 WINDOW_LABELS = {
@@ -29,26 +33,20 @@ PROVIDER_NAMES = {
     "ollama": "Ollama",
 }
 
-SENSITIVE_KEYS = {
-    "account",
-    "accountemail",
-    "apikey",
-    "api_key",
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "credentials",
-    "email",
-    "identity",
-    "organization",
-    "org",
-    "password",
-    "refresh_token",
-    "secret",
-    "token",
-    "user",
-}
+_IDENTIFIER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+def safe_identifier(value: Any, fallback: str = "") -> str:
+    """Return a bounded non-sensitive storage/UI identifier or ``fallback``."""
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip()
+    if not text or len(text) > 64:
+        return fallback
+    text = text.lower()
+    if not _IDENTIFIER_RE.fullmatch(text) or redact_text(text) != text:
+        return fallback
+    return text
 
 
 @dataclass(frozen=True)
@@ -57,6 +55,7 @@ class WindowUsage:
     label: str
     used_percent: float
     resets_at: str | None = None
+    reset_description: str = ""
     reset_countdown: str = ""
     pace_note: str = ""
     window_minutes: int | None = None
@@ -106,11 +105,11 @@ def parse_iso_datetime(value: str | None) -> dt.datetime | None:
     try:
         normalized = value.replace("Z", "+00:00")
         parsed = dt.datetime.fromisoformat(normalized)
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
 
 
 def format_reset_countdown(value: str | None, *, now: dt.datetime | None = None) -> str:
@@ -138,14 +137,16 @@ def format_reset_countdown(value: str | None, *, now: dt.datetime | None = None)
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip().rstrip("%"))
-        except ValueError:
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)
+        elif isinstance(value, str):
+            number = float(value.strip().rstrip("%"))
+        else:
             return None
-    return None
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _used_percent(window: dict[str, Any]) -> float | None:
@@ -161,7 +162,12 @@ def _used_percent(window: dict[str, Any]) -> float | None:
 
 
 def _window_label(key: str, window: dict[str, Any]) -> str:
-    raw = window.get("label") or window.get("name") or window.get("window") or WINDOW_LABELS.get(key, key)
+    raw = (
+        window.get("label")
+        or window.get("name")
+        or window.get("window")
+        or WINDOW_LABELS.get(key, key)
+    )
     return str(raw).strip() or WINDOW_LABELS.get(key, key)
 
 
@@ -173,9 +179,20 @@ def _reset_value(window: dict[str, Any]) -> str | None:
     return None
 
 
+def _reset_description(window: dict[str, Any]) -> str:
+    for key in ("resetDescription", "reset_description"):
+        value = window.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+MAX_WINDOW_MINUTES = 525_600
+
+
 def _window_minutes(window: dict[str, Any]) -> int | None:
     value = _number(window.get("windowMinutes"))
-    if value is None or value <= 0:
+    if value is None or value <= 0 or value > MAX_WINDOW_MINUTES:
         return None
     return int(value)
 
@@ -184,9 +201,9 @@ def _error_message(entry: dict[str, Any]) -> str:
     error = entry.get("error")
     if isinstance(error, dict):
         msg = error.get("message") or error.get("detail") or error.get("kind")
-        return str(msg or "").strip()
+        return redact_text(str(msg or "").strip())
     if error:
-        return str(error).strip()
+        return redact_text(str(error).strip())
     return ""
 
 
@@ -215,14 +232,17 @@ def _pace_note(pace_window: Any) -> str:
     return " · ".join(bits)
 
 
-def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[ProviderUsage]:
+def normalize_payload(
+    payload: Any, *, now: dt.datetime | None = None
+) -> list[ProviderUsage]:
     entries = payload if isinstance(payload, list) else [payload]
     providers: list[ProviderUsage] = []
     for raw_entry in entries:
         if not isinstance(raw_entry, dict):
             continue
-        provider = str(raw_entry.get("provider") or "provider").strip().lower()
-        usage = raw_entry.get("usage") if isinstance(raw_entry.get("usage"), dict) else {}
+        provider = safe_identifier(raw_entry.get("provider"), "provider")
+        raw_usage = raw_entry.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         raw_pace = raw_entry.get("pace")
         pace = raw_pace if isinstance(raw_pace, dict) else {}
         windows: list[WindowUsage] = []
@@ -235,15 +255,18 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
             if used is None:
                 continue
             reset = _reset_value(window)
-            windows.append(WindowUsage(
-                key=key,
-                label=_window_label(key, window),
-                used_percent=round(used, 1),
-                resets_at=reset,
-                reset_countdown=format_reset_countdown(reset, now=now),
-                pace_note=_pace_note(pace.get(key)),
-                window_minutes=_window_minutes(window),
-            ))
+            windows.append(
+                WindowUsage(
+                    key=key,
+                    label=_window_label(key, window),
+                    used_percent=round(used, 1),
+                    resets_at=reset,
+                    reset_description=_reset_description(window),
+                    reset_countdown=format_reset_countdown(reset, now=now),
+                    pace_note=_pace_note(pace.get(key)),
+                    window_minutes=_window_minutes(window),
+                )
+            )
 
         extra_windows = usage.get("extraRateWindows")
         if isinstance(extra_windows, list):
@@ -256,16 +279,23 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
                 if used is None:
                     continue
                 reset = _reset_value(window)
-                key = str(extra.get("key") or extra.get("id") or f"extra{index}")
-                label = str(extra.get("title") or "").strip() or _window_label(key, window)
-                windows.append(WindowUsage(
-                    key=key,
-                    label=label,
-                    used_percent=round(used, 1),
-                    resets_at=reset,
-                    reset_countdown=format_reset_countdown(reset, now=now),
-                    window_minutes=_window_minutes(window),
-                ))
+                key = safe_identifier(
+                    extra.get("key") or extra.get("id"), f"extra{index}"
+                )
+                label = str(extra.get("title") or "").strip() or _window_label(
+                    key, window
+                )
+                windows.append(
+                    WindowUsage(
+                        key=key,
+                        label=label,
+                        used_percent=round(used, 1),
+                        resets_at=reset,
+                        reset_description=_reset_description(window),
+                        reset_countdown=format_reset_countdown(reset, now=now),
+                        window_minutes=_window_minutes(window),
+                    )
+                )
 
         credits = raw_entry.get("credits")
         credits_remaining = None
@@ -274,30 +304,21 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
             if credits_remaining is not None and credits_remaining.is_integer():
                 credits_remaining = int(credits_remaining)
 
-        providers.append(ProviderUsage(
-            provider=provider,
-            display_name=provider_display_name(provider),
-            source=str(raw_entry.get("source") or ""),
-            version=str(raw_entry.get("version") or ""),
-            windows=windows,
-            credits_remaining=credits_remaining,
-            updated_at=str(usage.get("updatedAt") or "") or None,
-            error=_error_message(raw_entry),
-        ))
+        providers.append(
+            ProviderUsage(
+                provider=provider,
+                display_name=provider_display_name(provider),
+                source=str(raw_entry.get("source") or ""),
+                version=str(raw_entry.get("version") or ""),
+                windows=windows,
+                credits_remaining=credits_remaining,
+                updated_at=str(usage.get("updatedAt") or "") or None,
+                error=_error_message(raw_entry),
+            )
+        )
     return providers
 
 
 def sanitize_for_debug(value: Any) -> Any:
     """Return a copy safe for logs; not used for normal UI rendering."""
-    if isinstance(value, dict):
-        safe = {}
-        for key, item in value.items():
-            lowered = str(key).replace("-", "_").lower()
-            if lowered in SENSITIVE_KEYS or any(part in lowered for part in ("token", "secret", "cookie", "password", "email")):
-                safe[key] = "[REDACTED]"
-            else:
-                safe[key] = sanitize_for_debug(item)
-        return safe
-    if isinstance(value, list):
-        return [sanitize_for_debug(item) for item in value]
-    return value
+    return sanitize_structure(value)

@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import re
+import signal
 import subprocess
 import sys
-from pathlib import Path
-from typing import Iterable
+import threading
+import time
+from typing import Callable, Iterable
 
 from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
@@ -27,14 +30,22 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .history import HistoryStore, burn_down_series, daily_peaks
-from .model import ProviderUsage, WindowUsage, normalize_payload, parse_iso_datetime, provider_display_name, severity_for_percent
+from .history import HistoryStore, Sample, burn_down_series, daily_peaks
+from .model import (
+    ProviderUsage,
+    WindowUsage as WindowUsage,
+    normalize_payload,
+    parse_iso_datetime,
+    provider_display_name,
+    severity_for_percent as severity_for_percent,
+)
+from .privacy import redact_credentials, redact_text
 from .reset import (
     CodexAuthError,
     CodexResetError,
-    consume_reset_credit,
     credits_from_usage_payload,
     load_codex_auth,
+    redeem_reset_credit,
 )
 from .views import (
     BG,
@@ -47,15 +58,22 @@ from .views import (
     DetailsView,
     HistoryView,
     OverviewView,
-    color_for_percent,
+    color_for_percent as color_for_percent,
     latest_reset_at,
-    progress_style,
+    progress_style as progress_style,
     provider_accent_color,
     window_options,
 )
 
 DEFAULT_CODEXBAR = "/usr/bin/codexbar"
 DEFAULT_REFRESH_SECONDS = 120
+QT_MAX_TIMER_INTERVAL_MS = 2_147_483_647
+MAX_REFRESH_SECONDS = QT_MAX_TIMER_INTERVAL_MS // 1000
+
+
+def clamp_refresh_seconds(value: int) -> int:
+    return max(30, min(MAX_REFRESH_SECONDS, value))
+
 
 # Nerd Font / Font Awesome glyphs. These stay plain text, but render as icons
 # when a Nerd Font is installed and selected/fallbacked by KDE's tooltip font.
@@ -75,27 +93,6 @@ ICON_GAP = "   "
 def nf(icon: str, text: str) -> str:
     return f"{icon}{ICON_GAP}{text}"
 
-_SECRET_RE = re.compile(
-    r"(bearer\s+)[a-z0-9._~+/-]+|"
-    r"(token|secret|password|cookie|api[_-]?key)([=:]\s*)[^\s,;]+|"
-    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
-    re.IGNORECASE,
-)
-
-
-def redact_text(text: str) -> str:
-    if not text:
-        return ""
-
-    def repl(match: re.Match[str]) -> str:
-        if match.group(1):
-            return match.group(1) + "[REDACTED]"
-        if match.group(2):
-            return match.group(2) + match.group(3) + "[REDACTED]"
-        return "[REDACTED]"
-
-    return _SECRET_RE.sub(repl, text)
-
 
 def build_codexbar_command(codexbar_bin: str = DEFAULT_CODEXBAR) -> list[str]:
     return [codexbar_bin, "usage", "--format", "json", "--json-only", "--pretty"]
@@ -109,9 +106,103 @@ def load_usage_from_json_text(text: str) -> list[ProviderUsage]:
     return normalize_payload(load_usage_payload_from_json_text(text))
 
 
-def load_usage_payload_from_command(codexbar_bin: str = DEFAULT_CODEXBAR, *, timeout: int = 90) -> object:
+class _CommandCancelled(RuntimeError):
+    pass
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _stop_process_group(process: subprocess.Popen[str]) -> None:
+    process_group_id = process.pid
+    try:
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            if process.poll() is None:
+                process.terminate()
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            process.poll()
+            if not _process_group_exists(process_group_id):
+                break
+            time.sleep(0.02)
+
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            if process.poll() is None:
+                process.kill()
+
+        if process.poll() is None:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def _run_codexbar_command(
+    command: list[str],
+    *,
+    timeout: float,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if cancel_requested is not None and cancel_requested():
+        raise _CommandCancelled("codexbar command cancelled")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel_requested is not None and cancel_requested():
+            _stop_process_group(process)
+            raise _CommandCancelled("codexbar command cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _stop_process_group(process)
+            raise subprocess.TimeoutExpired(command, timeout)
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+        return subprocess.CompletedProcess(
+            command,
+            process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+def load_usage_payload_from_command(
+    codexbar_bin: str = DEFAULT_CODEXBAR,
+    *,
+    timeout: int = 90,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> object:
     command = build_codexbar_command(codexbar_bin)
-    completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout)
+    completed = _run_codexbar_command(
+        command,
+        timeout=timeout,
+        cancel_requested=cancel_requested,
+    )
     stdout = completed.stdout or ""
     if stdout.strip():
         try:
@@ -128,26 +219,39 @@ def load_usage_payload_from_command(codexbar_bin: str = DEFAULT_CODEXBAR, *, tim
     raise RuntimeError("codexbar returned empty output")
 
 
-def load_usage_from_command(codexbar_bin: str = DEFAULT_CODEXBAR, *, timeout: int = 90) -> list[ProviderUsage]:
-    return normalize_payload(load_usage_payload_from_command(codexbar_bin, timeout=timeout))
+def load_usage_from_command(
+    codexbar_bin: str = DEFAULT_CODEXBAR, *, timeout: int = 90
+) -> list[ProviderUsage]:
+    return normalize_payload(
+        load_usage_payload_from_command(codexbar_bin, timeout=timeout)
+    )
+
+
+def _normalized_reset_text(window: WindowUsage) -> str:
+    if window.reset_countdown:
+        return f"resets in {window.reset_countdown}"
+    return window.reset_description
 
 
 def provider_summary_lines(providers: Iterable[ProviderUsage]) -> list[str]:
     lines: list[str] = []
     for provider in providers:
         if provider.error:
-            lines.append(f"{provider.display_name}: error: {redact_text(provider.error)}")
+            lines.append(
+                f"{provider.display_name}: error: {redact_text(provider.error)}"
+            )
             continue
         bits = []
         for window in provider.windows:
-            reset = f", resets {window.reset_countdown}" if window.reset_countdown else ""
+            reset_text = _normalized_reset_text(window)
+            reset = f", {reset_text}" if reset_text else ""
             bits.append(f"{window.label} {window.used_percent:.0f}%{reset}")
         if provider.credits_remaining is not None:
             bits.append(f"credits {provider.credits_remaining:g}")
         if not bits:
             bits.append("no usage windows")
         lines.append(f"{provider.display_name}: " + "; ".join(bits))
-    return lines
+    return [redact_text(line) for line in lines]
 
 
 def _provider_header(provider: ProviderUsage) -> str:
@@ -164,8 +268,9 @@ def _tray_detail_lines(provider: ProviderUsage) -> list[str]:
     lines = []
     for window in provider.windows:
         line = f"  {window.label}: {window.used_percent:.0f}% used"
-        if window.reset_countdown:
-            line += f" · resets in {window.reset_countdown}"
+        reset_text = _normalized_reset_text(window)
+        if reset_text:
+            line += f" · {reset_text}"
         lines.append(line)
         if window.pace_note:
             lines.append(f"    pace: {window.pace_note}")
@@ -189,8 +294,9 @@ def _as_list(value: object) -> list[object]:
 TOOLTIP_WIDTH = 46
 
 
-def _wrap_indented(text: str, *, prefix: str, cont_indent: str,
-                   width: int = TOOLTIP_WIDTH) -> list[str]:
+def _wrap_indented(
+    text: str, *, prefix: str, cont_indent: str, width: int = TOOLTIP_WIDTH
+) -> list[str]:
     """Word-wrap `text` so the first line starts with `prefix` and
     continuations align under `cont_indent`, all within `width` chars."""
     words = text.split()
@@ -212,23 +318,29 @@ def _wrap_indented(text: str, *, prefix: str, cont_indent: str,
 def _compact_percent(value: object) -> str:
     percent = _percent_value(value)
     if percent is None:
-        text = str(value or "").strip()
-        if not text:
-            return "?%"
-        return text if text.endswith("%") else f"{text}%"
+        return "?%"
     return f"{percent:g}%"
 
 
-def _percent_value(value: object) -> float | None:
+def _finite_number(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
-        return max(0.0, min(100.0, float(value)))
-    text = str(value).strip().rstrip("%")
     try:
-        return max(0.0, min(100.0, float(text)))
-    except ValueError:
+        number = (
+            float(value)
+            if isinstance(value, (int, float))
+            else float(str(value).strip().rstrip("%"))
+        )
+    except (TypeError, ValueError, OverflowError):
         return None
+    return number if math.isfinite(number) else None
+
+
+def _percent_value(value: object) -> float | None:
+    number = _finite_number(value)
+    if number is None:
+        return None
+    return max(0.0, min(100.0, number))
 
 
 def _usage_bar(value: object, *, width: int = 10) -> str:
@@ -242,7 +354,7 @@ def _compact_reset_description(value: object) -> str:
     if not text:
         return ""
     if text.startswith("Resets"):
-        text = text[len("Resets"):]
+        text = text[len("Resets") :]
         text = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", text)
         text = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", text)
         text = text.replace(",", ", ")
@@ -313,12 +425,15 @@ def _window_icon(label: str) -> str:
     return NF_CLOCK
 
 
-def _compact_window_block(label: str, window: dict[str, object],
-                          pace_window: dict[str, object] | None = None) -> list[str]:
+def _compact_window_block(
+    label: str, window: dict[str, object], pace_window: dict[str, object] | None = None
+) -> list[str]:
     """One usage window as short lines that survive KDE's ~46-char wrap:
     meter inline with the label, reset and pace as indented sub-lines."""
     used = window.get("usedPercent")
-    lines = [f"  {nf(_window_icon(label), f'{label}: {_compact_percent(used)} used')} {_usage_bar(used)}"]
+    lines = [
+        f"  {nf(_window_icon(label), f'{label}: {_compact_percent(used)} used')} {_usage_bar(used)}"
+    ]
     reset = _compact_reset(window)
     if reset:
         lines.append(f"      ↳ {reset}")
@@ -331,21 +446,22 @@ def _compact_window_block(label: str, window: dict[str, object],
 def _compact_pace_line(pace_window: dict[str, object]) -> str | None:
     delta = pace_window.get("deltaPercent")
     expected = pace_window.get("expectedUsedPercent")
-    if delta is None and expected is None:
+    delta_value = _finite_number(delta)
+    if delta_value is not None and not -100.0 <= delta_value <= 100.0:
+        delta_value = None
+    expected_value = _percent_value(expected)
+    bits: list[str] = []
+    if delta_value is not None:
+        if delta_value < 0:
+            bits.append(f"{abs(delta_value):g}% reserve")
+        elif delta_value > 0:
+            bits.append(f"{delta_value:g}% over pace")
+        else:
+            bits.append("on pace")
+    if expected_value is not None:
+        bits.append(f"expected {expected_value:g}%")
+    if not bits:
         return None
-    try:
-        delta_value = float(delta)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        delta_value = 0.0
-    if delta_value < 0:
-        pace_text = f"{abs(delta_value):g}% reserve"
-    elif delta_value > 0:
-        pace_text = f"{delta_value:g}% over pace"
-    else:
-        pace_text = "on pace"
-    bits = [pace_text]
-    if expected is not None:
-        bits.append(f"expected {_compact_percent(expected)}")
     line = " · ".join(bits)
     will_last = pace_window.get("willLastToReset")
     if will_last is True:
@@ -355,11 +471,12 @@ def _compact_pace_line(pace_window: dict[str, object]) -> str | None:
     return f"  {nf(NF_PACE, line)}"
 
 
-def _append_compact_reset_credits(lines: list[str], reset_credits: dict[str, object]) -> None:
-    available = reset_credits.get("availableCount")
-    if available is not None:
-        count_text = f"{available:g}" if isinstance(available, (int, float)) else str(available)
-        lines.append(f"  {nf(NF_RESET, f'Reset credits: {count_text} available')}")
+def _append_compact_reset_credits(
+    lines: list[str], reset_credits: dict[str, object]
+) -> None:
+    available = _finite_number(reset_credits.get("availableCount"))
+    if available is not None and 0 <= available <= 1_000_000:
+        lines.append(f"  {nf(NF_RESET, f'Reset credits: {available:g} available')}")
     groups: dict[tuple[str, str], list[str]] = {}
     for credit in _as_list(reset_credits.get("credits")):
         credit_dict = _as_dict(credit)
@@ -376,7 +493,11 @@ def _append_compact_reset_credits(lines: list[str], reset_credits: dict[str, obj
         lines.append(f"    {head}")
         dated = sorted(expiry for expiry in expiries if expiry)
         if dated:
-            note = f"expires {dated[0]}" if len(expiries) == 1 else f"next expires {dated[0]}"
+            note = (
+                f"expires {dated[0]}"
+                if len(expiries) == 1
+                else f"next expires {dated[0]}"
+            )
             lines.append(f"      ↳ {note}")
 
 
@@ -395,12 +516,20 @@ def _primary_usage_windows(usage: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _peak_usage_percent(usage: dict[str, object]) -> float:
-    values = [_percent_value(window.get("usedPercent")) for window in _primary_usage_windows(usage)]
-    values = [value for value in values if value is not None]
+    values: list[float] = []
+    for window in _primary_usage_windows(usage):
+        value = _percent_value(window.get("usedPercent"))
+        if value is not None:
+            values.append(value)
     return max(values, default=0.0)
 
 
-def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
+def _compact_provider_lines(
+    entry: dict[str, object],
+    index: int,
+    *,
+    privacy_mode: bool,
+) -> list[str]:
     usage = _as_dict(entry.get("usage"))
     identity = _as_dict(usage.get("identity"))
     credits = _as_dict(entry.get("credits"))
@@ -415,15 +544,24 @@ def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
     header = _compact_provider_header(entry, index)
     if message:
         lines = [nf(NF_WARN, header)]
-        lines.extend(_wrap_indented(f"Error: {redact_text(str(message))}",
-                                    prefix="  ", cont_indent="    "))
+        lines.extend(
+            _wrap_indented(
+                f"Error: {redact_text(str(message))}", prefix="  ", cont_indent="    "
+            )
+        )
         return lines
 
     lines = [nf(NF_OK, f"{header}  {_peak_usage_percent(usage):g}% peak")]
 
-    account = usage.get("accountEmail") or identity.get("accountEmail")
+    account = (
+        usage.get("accountEmail")
+        or entry.get("accountEmail")
+        or identity.get("accountEmail")
+        or identity.get("email")
+    )
     if account:
-        lines.append(f"  {nf(NF_ACCOUNT, f'Account: {account}')}")
+        account_text = "[REDACTED]" if privacy_mode else str(account)
+        lines.append(f"  {nf(NF_ACCOUNT, f'Account: {account_text}')}")
 
     plan = usage.get("loginMethod") or identity.get("loginMethod")
     confidence = usage.get("dataConfidence")
@@ -435,7 +573,11 @@ def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
     if plan_bits:
         lines.append("  " + nf(NF_PLAN, " · ".join(plan_bits)))
 
-    for key, label in (("primary", "5h/session"), ("secondary", "weekly"), ("tertiary", "tertiary")):
+    for key, label in (
+        ("primary", "5h/session"),
+        ("secondary", "weekly"),
+        ("tertiary", "tertiary"),
+    ):
         window = _as_dict(usage.get(key))
         if window:
             lines.extend(_compact_window_block(label, window, _as_dict(pace.get(key))))
@@ -450,7 +592,9 @@ def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
         lines.extend(_compact_window_block(title, window))
 
     if "remaining" in credits:
-        lines.append("  " + nf(NF_CREDITS, f"Credits: {credits.get('remaining')} remaining"))
+        lines.append(
+            "  " + nf(NF_CREDITS, f"Credits: {credits.get('remaining')} remaining")
+        )
     credit_events = _as_list(credits.get("events"))
     if credit_events:
         lines.append("  " + nf(NF_CREDITS, f"Credit events: {len(credit_events)}"))
@@ -459,25 +603,42 @@ def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
     if reset_credits:
         _append_compact_reset_credits(lines, reset_credits)
 
-    updated = usage.get("updatedAt") or credits.get("updatedAt") or reset_credits.get("updatedAt")
+    updated = (
+        usage.get("updatedAt")
+        or credits.get("updatedAt")
+        or reset_credits.get("updatedAt")
+    )
     if updated:
         lines.append("  " + nf(NF_CLOCK, f"Updated: {format_updated_age(updated)}"))
 
     return lines
 
 
-def _raw_payload_lines(raw_payload: object) -> list[str]:
+def format_payload_lines(
+    raw_payload: object,
+    *,
+    privacy_mode: bool = True,
+) -> list[str]:
     entries = raw_payload if isinstance(raw_payload, list) else [raw_payload]
     lines: list[str] = []
     for index, entry in enumerate(entries, start=1):
         if index > 1:
             lines.append("")
         if isinstance(entry, dict):
-            lines.extend(_compact_provider_lines(entry, index))
-    return lines
+            lines.extend(
+                _compact_provider_lines(
+                    entry,
+                    index,
+                    privacy_mode=privacy_mode,
+                )
+            )
+    redactor = redact_text if privacy_mode else redact_credentials
+    return [redactor(line) for line in lines]
 
 
-def _provider_count(raw_payload: object | None, providers: Iterable[ProviderUsage]) -> int:
+def _provider_count(
+    raw_payload: object | None, providers: Iterable[ProviderUsage]
+) -> int:
     if isinstance(raw_payload, list):
         return len([entry for entry in raw_payload if isinstance(entry, dict)])
     if isinstance(raw_payload, dict):
@@ -485,7 +646,13 @@ def _provider_count(raw_payload: object | None, providers: Iterable[ProviderUsag
     return len(list(providers))
 
 
-def build_tray_tooltip(providers: Iterable[ProviderUsage], error: str = "", raw_payload: object | None = None) -> str:
+def build_tray_tooltip(
+    providers: Iterable[ProviderUsage],
+    error: str = "",
+    raw_payload: object | None = None,
+    *,
+    privacy_mode: bool = True,
+) -> str:
     """Build the hover text shown by the system tray icon.
 
     KDE/Qt tray tooltips are plain text, so this uses compact typography,
@@ -504,7 +671,7 @@ def build_tray_tooltip(providers: Iterable[ProviderUsage], error: str = "", raw_
 
     if raw_payload is not None:
         lines.append("────────────────────────")
-        lines.extend(_raw_payload_lines(raw_payload))
+        lines.extend(format_payload_lines(raw_payload, privacy_mode=privacy_mode))
         lines.append("")
         lines.append("Click: dashboard  •  Right-click: menu")
         return "\n".join(lines)
@@ -518,29 +685,76 @@ def build_tray_tooltip(providers: Iterable[ProviderUsage], error: str = "", raw_
                 lines.append("")
             lines.append(_provider_header(provider))
             if provider.error:
-                lines.extend(_wrap_indented(f"error: {redact_text(provider.error)}",
-                                            prefix="  ", cont_indent="    "))
+                lines.extend(
+                    _wrap_indented(
+                        f"error: {redact_text(provider.error)}",
+                        prefix="  ",
+                        cont_indent="    ",
+                    )
+                )
             else:
                 lines.extend(_tray_detail_lines(provider))
     lines.append("")
     lines.append("Click: dashboard  •  Right-click: menu")
-    return "\n".join(lines)
+    redactor = redact_text if privacy_mode else redact_credentials
+    return "\n".join(redactor(line) for line in lines)
 
 
 class UsageWorker(QThread):
     finished_with_result = pyqtSignal(object, str, object)
+    history_updated = pyqtSignal(object, bool)
 
-    def __init__(self, codexbar_bin: str, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        codexbar_bin: str,
+        parent: QObject | None = None,
+        *,
+        history_store: HistoryStore | None = None,
+    ) -> None:
         super().__init__(parent)
         self.codexbar_bin = codexbar_bin
+        self.history_store = history_store
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self.requestInterruption()
+        self._cancel_event.set()
+
+    def _record_history(self, providers: list[ProviderUsage]) -> list[Sample]:
+        if self.history_store is None or self._cancel_event.is_set():
+            return []
+        try:
+            return self.history_store.record(providers)
+        except OSError:
+            return []
+
+    def _update_history(self, recorded: list[Sample]) -> None:
+        if self.history_store is None or self._cancel_event.is_set():
+            return
+        try:
+            pruned = self.history_store.prune_if_due(days=60)
+        except OSError:
+            return
+        if pruned is not None:
+            self.history_updated.emit(pruned, True)
+        elif recorded:
+            self.history_updated.emit(recorded, False)
 
     def run(self) -> None:
         try:
-            raw_payload = load_usage_payload_from_command(self.codexbar_bin)
+            raw_payload = load_usage_payload_from_command(
+                self.codexbar_bin,
+                cancel_requested=self._cancel_event.is_set,
+            )
             providers = normalize_payload(raw_payload)
+            recorded = self._record_history(providers)
             self.finished_with_result.emit(providers, "", raw_payload)
+            self._update_history(recorded)
+        except _CommandCancelled:
+            return
         except Exception as exc:  # GUI boundary: show sanitized concise error
             self.finished_with_result.emit([], redact_text(str(exc)), None)
+            self._update_history([])
 
 
 class RedeemWorker(QThread):
@@ -555,10 +769,13 @@ class RedeemWorker(QThread):
     def run(self) -> None:
         try:
             token, account_id = load_codex_auth()
-            result = consume_reset_credit(token, account_id, self.credit_id)
+            result = redeem_reset_credit(token, account_id, self.credit_id)
             windows = result.get("windows_reset")
             redeemed_at = (result.get("credit") or {}).get("redeemed_at") or ""
-            message = f"Redeemed — windows reset: {windows}"
+            if result.get("reconciled"):
+                message = "Redeemed — confirmed after status refresh"
+            else:
+                message = f"Redeemed — windows reset: {windows}"
             if redeemed_at:
                 message += f" · {redeemed_at}"
             self.finished_with_result.emit(True, message)
@@ -589,8 +806,6 @@ def make_app_icon() -> QIcon:
     return QIcon(pixmap)
 
 
-
-
 # ---------------------------------------------------------------------------
 # UI — CodexBar-inspired flat dark shell with multiple statistic views.
 # Chart widgets and view classes live in views.py; this file wires them
@@ -598,20 +813,48 @@ def make_app_icon() -> QIcon:
 # ---------------------------------------------------------------------------
 
 
+def _privacy_window_options(
+    providers: list[ProviderUsage], *, privacy_mode: bool
+) -> list[tuple[str, str, str]]:
+    return [
+        (
+            provider_key,
+            window_key,
+            redact_text(label, redact_emails=privacy_mode),
+        )
+        for provider_key, window_key, label in window_options(providers)
+    ]
+
+
 class DashboardWindow(QMainWindow):
     data_changed = pyqtSignal(object, str, object)
 
     VIEWS = ("Overview", "History", "Burn-down", "Details")
 
-    def __init__(self, *, codexbar_bin: str = DEFAULT_CODEXBAR, refresh_seconds: int = DEFAULT_REFRESH_SECONDS,
-                 history_store: HistoryStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        codexbar_bin: str = DEFAULT_CODEXBAR,
+        refresh_seconds: int = DEFAULT_REFRESH_SECONDS,
+        history_store: HistoryStore | None = None,
+        history_samples: Iterable[Sample] | None = None,
+        privacy_mode: bool = True,
+    ) -> None:
         super().__init__()
         self.codexbar_bin = codexbar_bin
-        self.refresh_seconds = max(30, refresh_seconds)
+        self.refresh_seconds = clamp_refresh_seconds(refresh_seconds)
+        self.privacy_mode = bool(privacy_mode)
         self.worker: UsageWorker | None = None
+        self.redeem_worker: RedeemWorker | None = None
+        self._shutting_down = False
         self.history = history_store or HistoryStore()
+        self._history_samples = sorted(
+            (sample for sample in history_samples or [] if isinstance(sample, Sample)),
+            key=lambda sample: sample.ts,
+        )
         self.providers: list[ProviderUsage] = []
         self.raw_payload: object | None = None
+        self.last_error = ""
         self.setWindowTitle("CodexBar KDE")
         self.setMinimumSize(860, 560)
         self.setWindowIcon(make_app_icon())
@@ -630,10 +873,14 @@ class DashboardWindow(QMainWindow):
         side.setContentsMargins(14, 16, 14, 16)
         side.setSpacing(4)
         brand = QLabel("CodexBar")
-        brand.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 800; background: transparent;")
+        brand.setStyleSheet(
+            f"color: {TEXT}; font-size: 16px; font-weight: 800; background: transparent;"
+        )
         side.addWidget(brand)
         brand_sub = QLabel("usage dashboard")
-        brand_sub.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent;")
+        brand_sub.setStyleSheet(
+            f"color: {MUTED}; font-size: 11px; background: transparent;"
+        )
         side.addWidget(brand_sub)
         side.addSpacing(16)
         self.nav_buttons: dict[str, QPushButton] = {}
@@ -648,7 +895,9 @@ class DashboardWindow(QMainWindow):
         side.addStretch(1)
         self.status_label = QLabel("Not refreshed yet")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent;")
+        self.status_label.setStyleSheet(
+            f"color: {MUTED}; font-size: 11px; background: transparent;"
+        )
         side.addWidget(self.status_label)
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setObjectName("RefreshButton")
@@ -663,26 +912,33 @@ class DashboardWindow(QMainWindow):
 
         header = QHBoxLayout()
         self.view_title = QLabel(self.VIEWS[0])
-        self.view_title.setStyleSheet(f"color: {TEXT}; font-size: 21px; font-weight: 800; letter-spacing: -0.4px; background: transparent;")
+        self.view_title.setStyleSheet(
+            f"color: {TEXT}; font-size: 21px; font-weight: 800; letter-spacing: -0.4px; background: transparent;"
+        )
         header.addWidget(self.view_title)
         header.addStretch(1)
         content.addLayout(header)
 
         self.error_label = QLabel("")
         self.error_label.setWordWrap(True)
-        self.error_label.setStyleSheet("background: #241117; color: #ffb2b2; border: 1px solid #5a2c34; border-radius: 6px; padding: 8px 10px; font-size: 12px;")
+        self.error_label.setStyleSheet(
+            "background: #241117; color: #ffb2b2; border: 1px solid #5a2c34; border-radius: 6px; padding: 8px 10px; font-size: 12px;"
+        )
         self.error_label.hide()
         content.addWidget(self.error_label)
 
         self.stack = QStackedWidget()
         self.view_overview = OverviewView()
-        self.view_overview.reset_panel.redeem_requested.connect(self._redeem_reset_credit)
-        self.redeem_worker: RedeemWorker | None = None
+        self.view_overview.reset_panel.redeem_requested.connect(
+            self._redeem_reset_credit
+        )
         self.view_history = HistoryView()
         self.view_history.selection_changed.connect(self._update_history_chart)
         self.view_burndown = BurnDownView()
         self.view_burndown.selection_changed.connect(self._update_burndown_chart)
         self.view_details = DetailsView()
+        self.view_details.set_privacy_mode(self.privacy_mode)
+        self.view_details.privacy_changed.connect(self.set_privacy_mode)
         self._views: dict[str, QWidget] = {
             "Overview": self.view_overview,
             "History": self.view_history,
@@ -781,49 +1037,101 @@ class DashboardWindow(QMainWindow):
     def details_text(self) -> str:
         return self.view_details.plain_text()
 
+    def set_privacy_mode(self, enabled: bool) -> None:
+        self.privacy_mode = bool(enabled)
+        self.view_details.set_privacy_mode(self.privacy_mode)
+        self.view_overview.set_providers(
+            self.providers,
+            privacy_mode=self.privacy_mode,
+        )
+        options = _privacy_window_options(
+            self.providers,
+            privacy_mode=self.privacy_mode,
+        )
+        self.view_history.set_options(options)
+        self.view_burndown.set_options(options)
+        if self.last_error:
+            self.error_label.setText(
+                redact_text(self.last_error, redact_emails=self.privacy_mode)
+            )
+        self._render_details()
+        self.data_changed.emit(self.providers, self.last_error, self.raw_payload)
+
+    def _render_details(self) -> None:
+        if self.raw_payload is not None:
+            payload_lines = format_payload_lines(
+                self.raw_payload,
+                privacy_mode=self.privacy_mode,
+            )
+            self.view_details.set_text("\n".join(payload_lines))
+        elif self.providers:
+            provider_lines: list[str] = []
+            for index, provider in enumerate(self.providers):
+                if index:
+                    provider_lines.append("")
+                provider_lines.append(_provider_header(provider))
+                provider_lines.extend(_tray_detail_lines(provider))
+            self.view_details.set_text("\n".join(provider_lines))
+        else:
+            self.view_details.set_text("No data yet.")
+
     # ---- data --------------------------------------------------------
 
-    def set_providers(self, providers: list[ProviderUsage], error: str = "", raw_payload: object | None = None) -> None:
+    def set_providers(
+        self,
+        providers: list[ProviderUsage],
+        error: str = "",
+        raw_payload: object | None = None,
+    ) -> None:
         self.providers = providers
         self.raw_payload = raw_payload
+        self.last_error = error
         self.error_label.setVisible(bool(error))
-        self.error_label.setText(error)
+        self.error_label.setText(redact_text(error, redact_emails=self.privacy_mode))
         if not providers and not error:
             self.error_label.setVisible(True)
-            self.error_label.setText("No providers returned by codexbar. Enable providers with the CodexBar CLI config.")
+            self.error_label.setText(
+                "No providers returned by codexbar. Enable providers with the CodexBar CLI config."
+            )
 
-        self.view_overview.set_providers(providers)
-        self.view_overview.set_reset_credits(credits_from_usage_payload(raw_payload))
-        options = window_options(providers)
+        self.view_overview.set_providers(
+            providers,
+            privacy_mode=self.privacy_mode,
+        )
+        self.view_overview.set_reset_credits(
+            credits_from_usage_payload(raw_payload),
+            privacy_mode=self.privacy_mode,
+        )
+        options = _privacy_window_options(
+            providers,
+            privacy_mode=self.privacy_mode,
+        )
         self.view_history.set_options(options)
         self.view_burndown.set_options(options)
         self._update_history_chart()
         self._update_burndown_chart()
-        if raw_payload is not None:
-            self.view_details.set_text("\n".join(_raw_payload_lines(raw_payload)))
-        elif providers:
-            lines: list[str] = []
-            for index, provider in enumerate(providers):
-                if index:
-                    lines.append("")
-                lines.append(_provider_header(provider))
-                lines.extend(_tray_detail_lines(provider))
-            self.view_details.set_text("\n".join(lines))
-        else:
-            self.view_details.set_text("No data yet.")
+        self._render_details()
 
         if providers:
             error_count = sum(1 for provider in providers if provider.error)
             ok_count = len(providers) - error_count
             if error_count:
-                self.status_label.setText(f"● {ok_count} online · {error_count} warning")
-                self.status_label.setStyleSheet("color: #f1c857; font-size: 11px; font-weight: 700; background: transparent;")
+                self.status_label.setText(
+                    f"● {ok_count} online · {error_count} warning"
+                )
+                self.status_label.setStyleSheet(
+                    "color: #f1c857; font-size: 11px; font-weight: 700; background: transparent;"
+                )
             else:
                 self.status_label.setText(f"● {len(providers)} providers live")
-                self.status_label.setStyleSheet("color: #41d17d; font-size: 11px; font-weight: 700; background: transparent;")
+                self.status_label.setStyleSheet(
+                    "color: #41d17d; font-size: 11px; font-weight: 700; background: transparent;"
+                )
         else:
             self.status_label.setText("Refresh failed")
-            self.status_label.setStyleSheet("color: #ff9b9b; font-size: 11px; font-weight: 700; background: transparent;")
+            self.status_label.setStyleSheet(
+                "color: #ff9b9b; font-size: 11px; font-weight: 700; background: transparent;"
+            )
         self.data_changed.emit(providers, error, raw_payload)
 
     def _accent_for(self, provider_key: str) -> str:
@@ -832,7 +1140,7 @@ class DashboardWindow(QMainWindow):
     # ---- reset credits -------------------------------------------------
 
     def _redeem_reset_credit(self, credit_id: str) -> None:
-        if self.redeem_worker and self.redeem_worker.isRunning():
+        if self._shutting_down or self.redeem_worker is not None:
             return
         panel = self.view_overview.reset_panel
         confirm = QMessageBox.question(
@@ -847,9 +1155,13 @@ class DashboardWindow(QMainWindow):
         if confirm != QMessageBox.StandardButton.Yes:
             return
         panel.set_busy(True, "Redeeming…")
-        self.redeem_worker = RedeemWorker(credit_id, self)
-        self.redeem_worker.finished_with_result.connect(self._redeem_finished)
-        self.redeem_worker.start()
+        worker = RedeemWorker(credit_id, self)
+        self.redeem_worker = worker
+        worker.finished_with_result.connect(self._redeem_finished)
+        worker.finished.connect(
+            lambda worker=worker: self._redeem_worker_stopped(worker)
+        )
+        worker.start()
 
     def _redeem_finished(self, ok: bool, message: str) -> None:
         panel = self.view_overview.reset_panel
@@ -859,14 +1171,21 @@ class DashboardWindow(QMainWindow):
             # Pull fresh usage so windows and the credit list update.
             self.refresh_now()
 
+    def _redeem_worker_stopped(self, worker: RedeemWorker) -> None:
+        if self.redeem_worker is worker:
+            self.redeem_worker = None
+        worker.deleteLater()
+
     def _update_history_chart(self) -> None:
         selection = self.view_history.current_selection()
         if not selection:
             self.view_history.set_series([], TEAL, "")
             return
         provider_key, window_key = selection
-        samples = self.history.load()
-        series = daily_peaks(samples, provider=provider_key, window_key=window_key, days=30)
+        samples = self._history_samples
+        series = daily_peaks(
+            samples, provider=provider_key, window_key=window_key, days=30
+        )
         active_days = [p for p in series if p.value > 0]
         if active_days:
             avg = sum(p.value for p in active_days) / len(active_days)
@@ -881,16 +1200,22 @@ class DashboardWindow(QMainWindow):
             self.view_burndown.set_burn_down(None, TEAL, "")
             return
         provider_key, window_key = selection
-        resets_at, window_minutes = latest_reset_at(self.providers, provider_key, window_key)
+        resets_at, window_minutes = latest_reset_at(
+            self.providers, provider_key, window_key
+        )
         if resets_at is None or not window_minutes:
-            self.view_burndown.set_burn_down(None, TEAL, "This window does not report a reset time.")
+            self.view_burndown.set_burn_down(
+                None, TEAL, "This window does not report a reset time."
+            )
             return
         samples = [
             (s.ts, s.windows[window_key])
-            for s in self.history.load()
+            for s in self._history_samples
             if s.provider == provider_key and window_key in s.windows
         ]
-        burn = burn_down_series(samples, window_minutes=window_minutes, resets_at=resets_at)
+        burn = burn_down_series(
+            samples, window_minutes=window_minutes, resets_at=resets_at
+        )
         if burn.actual:
             latest = burn.actual[-1]
             ideal = burn.ideal_remaining_at(latest.ts)
@@ -904,25 +1229,73 @@ class DashboardWindow(QMainWindow):
     # ---- refresh -----------------------------------------------------
 
     def refresh_now(self) -> None:
-        if self.worker and self.worker.isRunning():
+        if self._shutting_down or self.worker is not None:
             return
         self.refresh_button.setEnabled(False)
         self.status_label.setText("Refreshing…")
-        self.status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent;")
-        self.worker = UsageWorker(self.codexbar_bin, self)
-        self.worker.finished_with_result.connect(self._refresh_finished)
-        self.worker.start()
+        self.status_label.setStyleSheet(
+            f"color: {MUTED}; font-size: 11px; background: transparent;"
+        )
+        worker = UsageWorker(
+            self.codexbar_bin,
+            self,
+            history_store=self.history,
+        )
+        self.worker = worker
+        worker.finished_with_result.connect(self._refresh_finished)
+        worker.history_updated.connect(self._history_worker_updated)
+        worker.finished.connect(
+            lambda worker=worker: self._usage_worker_stopped(worker)
+        )
+        worker.start()
 
-    def _refresh_finished(self, providers: object, error: str, raw_payload: object) -> None:
+    def _refresh_finished(
+        self, providers: object, error: str, raw_payload: object
+    ) -> None:
         self.refresh_button.setEnabled(True)
         typed_providers = providers if isinstance(providers, list) else []
-        if typed_providers:
-            try:
-                self.history.record(typed_providers)
-                self.history.prune(days=60)
-            except OSError:
-                pass  # history is best-effort; never break the UI over disk issues
         self.set_providers(typed_providers, error, raw_payload)
+
+    def _history_worker_updated(self, samples: object, replace: bool) -> None:
+        typed_samples = (
+            [sample for sample in samples if isinstance(sample, Sample)]
+            if isinstance(samples, list)
+            else []
+        )
+        if replace:
+            self._history_samples = typed_samples
+        else:
+            self._history_samples.extend(typed_samples)
+            self._history_samples.sort(key=lambda sample: sample.ts)
+        self._update_history_chart()
+        self._update_burndown_chart()
+
+    def _usage_worker_stopped(self, worker: UsageWorker) -> None:
+        if self.worker is worker:
+            self.worker = None
+        worker.deleteLater()
+
+    def shutdown_workers(self) -> None:
+        """Stop cancellable work and wait for irreversible work before teardown."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self.timer.stop()
+
+        usage_worker = self.worker
+        if usage_worker is not None:
+            usage_worker.cancel()
+            usage_worker.wait()
+            self.worker = None
+            usage_worker.deleteLater()
+
+        redeem_worker = self.redeem_worker
+        if redeem_worker is not None:
+            # Redemption may already have issued its irreversible POST. Its
+            # network calls have finite timeouts, so wait rather than aborting.
+            redeem_worker.wait()
+            self.redeem_worker = None
+            redeem_worker.deleteLater()
 
 
 class TrayController(QObject):
@@ -936,6 +1309,8 @@ class TrayController(QObject):
         open_action.triggered.connect(self.show_window)
         menu.addAction(open_action)
         view_menu = menu.addMenu("Views")
+        if view_menu is None:
+            raise RuntimeError("Could not create tray Views menu")
         for name in DashboardWindow.VIEWS:
             action = QAction(name, self)
             action.triggered.connect(lambda _, n=name: self.show_view(n))
@@ -954,10 +1329,20 @@ class TrayController(QObject):
 
     def _data_changed(self, providers: object, error: str, raw_payload: object) -> None:
         typed_providers = providers if isinstance(providers, list) else []
-        self.tray.setToolTip(build_tray_tooltip(typed_providers, error, raw_payload))
+        self.tray.setToolTip(
+            build_tray_tooltip(
+                typed_providers,
+                error,
+                raw_payload,
+                privacy_mode=self.window.privacy_mode,
+            )
+        )
 
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
             self.show_window()
 
     def show_view(self, name: str) -> None:
@@ -980,7 +1365,21 @@ def run_once(codexbar_bin: str) -> int:
 def run_test_render(codexbar_bin: str) -> int:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication(["codexbar-kde", "--test-render"])
-    raw_payload = load_usage_payload_from_command(codexbar_bin)
+    raw_payload = [
+        {
+            "provider": "codex",
+            "source": "render-smoke",
+            "usage": {
+                "primary": {"usedPercent": 12, "windowMinutes": 300},
+                "secondary": {"usedPercent": 34, "windowMinutes": 10080},
+            },
+        },
+        {
+            "provider": "claude",
+            "source": "render-smoke",
+            "usage": {"primary": {"usedPercent": 23}},
+        },
+    ]
     providers = normalize_payload(raw_payload)
     window = DashboardWindow(codexbar_bin=codexbar_bin, refresh_seconds=3600)
     window.set_providers(providers, raw_payload=raw_payload)
@@ -990,7 +1389,9 @@ def run_test_render(codexbar_bin: str) -> int:
         window.show_view(name)
         app.processEvents()
     window.show_view(window.VIEWS[0])
-    print(f"rendered {len(providers)} providers across {len(window.view_names())} views")
+    print(
+        f"rendered {len(providers)} providers across {len(window.view_names())} views"
+    )
     window.close()
     return 0
 
@@ -998,13 +1399,34 @@ def run_test_render(codexbar_bin: str) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     from . import __version__
 
-    parser = argparse.ArgumentParser(description="Local CodexBar usage dashboard for KDE/Linux")
-    parser.add_argument("--version", action="version", version=f"codexbar-kde {__version__}")
-    parser.add_argument("--codexbar-bin", default=DEFAULT_CODEXBAR, help="Path to codexbar CLI")
-    parser.add_argument("--refresh-seconds", type=int, default=DEFAULT_REFRESH_SECONDS, help="Auto-refresh interval")
-    parser.add_argument("--once", action="store_true", help="Print a privacy-safe text summary and exit")
-    parser.add_argument("--test-render", action="store_true", help="Create the Qt UI offscreen once and exit")
-    parser.add_argument("--no-tray", action="store_true", help="Show only a normal window, without a system tray icon")
+    parser = argparse.ArgumentParser(
+        description="Local CodexBar usage dashboard for KDE/Linux"
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"codexbar-kde {__version__}"
+    )
+    parser.add_argument(
+        "--codexbar-bin", default=DEFAULT_CODEXBAR, help="Path to codexbar CLI"
+    )
+    parser.add_argument(
+        "--refresh-seconds",
+        type=int,
+        default=DEFAULT_REFRESH_SECONDS,
+        help="Auto-refresh interval",
+    )
+    parser.add_argument(
+        "--once", action="store_true", help="Print a privacy-safe text summary and exit"
+    )
+    parser.add_argument(
+        "--test-render",
+        action="store_true",
+        help="Create the Qt UI offscreen once and exit",
+    )
+    parser.add_argument(
+        "--no-tray",
+        action="store_true",
+        help="Show only a normal window, without a system tray icon",
+    )
     return parser.parse_args(argv)
 
 
@@ -1019,14 +1441,17 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("CodexBar KDE")
     app.setApplicationDisplayName("CodexBar KDE")
     try:
-        app.setDesktopFileName("codexbar-kde.desktop")
+        app.setDesktopFileName("io.github.BearHuddleston.codexbar_kde")
     except AttributeError:
         pass
     app.setQuitOnLastWindowClosed(args.no_tray)
     icon = make_app_icon()
     app.setWindowIcon(icon)
 
-    window = DashboardWindow(codexbar_bin=args.codexbar_bin, refresh_seconds=args.refresh_seconds)
+    window = DashboardWindow(
+        codexbar_bin=args.codexbar_bin, refresh_seconds=args.refresh_seconds
+    )
+    app.aboutToQuit.connect(window.shutdown_workers)
     tray_controller = None
     if not args.no_tray and QSystemTrayIcon.isSystemTrayAvailable():
         tray_controller = TrayController(window, app)
@@ -1036,7 +1461,11 @@ def main(argv: list[str] | None = None) -> int:
         # Tray requested but unavailable: fall back to a plain window and make
         # sure closing it quits instead of leaving an unreachable process.
         app.setQuitOnLastWindowClosed(True)
-        QMessageBox.information(window, "CodexBar KDE", "System tray is unavailable; opening as a normal window.")
+        QMessageBox.information(
+            window,
+            "CodexBar KDE",
+            "System tray is unavailable; opening as a normal window.",
+        )
     window.show()
     window.refresh_now()
     return app.exec()
