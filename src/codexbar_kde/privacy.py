@@ -75,8 +75,8 @@ _SENSITIVE_KEY_PARTS = (
 )
 
 
-def redact_text(text: str) -> str:
-    """Redact common credential and identity forms from untrusted text."""
+def redact_credentials(text: str) -> str:
+    """Redact credentials while preserving non-secret identity text."""
     if not text:
         return ""
     result = _CREDENTIAL_URL_RE.sub(
@@ -100,8 +100,12 @@ def redact_text(text: str) -> str:
         lambda match: f"{match.group('prefix')}{_REDACTED}", result
     )
     result = _PROVIDER_CREDENTIAL_RE.sub(_REDACTED, result)
-    result = _JWT_RE.sub(_REDACTED, result)
-    return _EMAIL_RE.sub(_REDACTED, result)
+    return _JWT_RE.sub(_REDACTED, result)
+
+
+def redact_text(text: str) -> str:
+    """Redact common credential and identity forms from untrusted text."""
+    return _EMAIL_RE.sub(_REDACTED, redact_credentials(text))
 
 
 def sanitize_structure(value: Any) -> Any:

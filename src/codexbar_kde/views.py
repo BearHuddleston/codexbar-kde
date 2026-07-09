@@ -12,6 +12,7 @@ import datetime as dt
 from PyQt6.QtCore import QRectF, Qt, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -423,6 +424,8 @@ class OverviewView(QWidget):
         value_bits = [f"{left:.0f}% left"]
         if window.reset_countdown:
             value_bits.append(f"resets in {window.reset_countdown}")
+        elif window.reset_description:
+            value_bits.append(window.reset_description)
         top.addWidget(_label("  ·  ".join(value_bits), size=12, color=MUTED))
         row.addLayout(top)
         bar = QProgressBar()
@@ -526,12 +529,22 @@ class BurnDownView(QWidget):
 class DetailsView(QWidget):
     """Read-only monospace dump of the compact per-provider fields."""
 
+    privacy_changed = pyqtSignal(bool)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 12, 12)
         layout.setSpacing(8)
-        layout.addWidget(_label("Everything meaningful from `codexbar usage`, compacted.", size=11, color=MUTED))
+        controls = QHBoxLayout()
+        controls.addWidget(_label("Everything meaningful from `codexbar usage`, compacted.", size=11, color=MUTED))
+        controls.addStretch(1)
+        self.privacy_toggle = QCheckBox("Privacy mode")
+        self.privacy_toggle.setToolTip("Mask account identity in Details and the tray tooltip")
+        self.privacy_toggle.setChecked(True)
+        self.privacy_toggle.toggled.connect(self.privacy_changed.emit)
+        controls.addWidget(self.privacy_toggle)
+        layout.addLayout(controls)
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         font = QFont("monospace")
@@ -548,6 +561,11 @@ class DetailsView(QWidget):
             }}
         """)
         layout.addWidget(self.text, 1)
+
+    def set_privacy_mode(self, enabled: bool) -> None:
+        self.privacy_toggle.blockSignals(True)
+        self.privacy_toggle.setChecked(enabled)
+        self.privacy_toggle.blockSignals(False)
 
     def set_text(self, value: str) -> None:
         self.text.setPlainText(value)

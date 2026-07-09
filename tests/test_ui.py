@@ -46,6 +46,7 @@ PAYLOAD = [
         "source": "oauth",
         "version": "0.142.5",
         "usage": {
+            "accountEmail": "person@example.com",
             "loginMethod": "pro",
             "primary": {"usedPercent": 36, "windowMinutes": 300, "resetDescription": "tomorrow, 1:03 AM"},
             "secondary": {"usedPercent": 7, "windowMinutes": 10080},
@@ -125,6 +126,34 @@ class UiTests(unittest.TestCase):
         self.assertIn("Codex (oauth, v0.142.5)", text)
         self.assertIn("5h/session", text)
         self.assertIn("Plan: pro", text)
+
+    def test_details_privacy_mode_masks_identity_and_can_be_disabled(self):
+        window = self._window()
+
+        self.assertTrue(window.view_details.privacy_toggle.isChecked())
+        self.assertNotIn("person@example.com", window.details_text())
+        self.assertIn("Account: [REDACTED]", window.details_text())
+
+        window.set_privacy_mode(False)
+
+        self.assertFalse(window.view_details.privacy_toggle.isChecked())
+        self.assertIn("person@example.com", window.details_text())
+
+    def test_refresh_timer_interval_stays_within_qt_integer_range(self):
+        maximum = DashboardWindow(
+            refresh_seconds=2_147_484,
+            history_store=self.history,
+        )
+        minimum = DashboardWindow(
+            refresh_seconds=1,
+            history_store=self.history,
+        )
+        self.addCleanup(maximum.close)
+        self.addCleanup(minimum.close)
+
+        self.assertEqual(maximum.refresh_seconds, 2_147_483)
+        self.assertEqual(maximum.timer.interval(), 2_147_483_000)
+        self.assertEqual(minimum.timer.interval(), 30_000)
 
     def test_overview_shows_reset_credit_panel_with_redeem_button(self):
         window = self._window()

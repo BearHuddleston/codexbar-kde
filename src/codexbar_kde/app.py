@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import os
 import re
 import signal
@@ -38,7 +39,7 @@ from .model import (
     provider_display_name,
     severity_for_percent as severity_for_percent,
 )
-from .privacy import redact_text
+from .privacy import redact_credentials, redact_text
 from .reset import (
     CodexAuthError,
     CodexResetError,
@@ -66,6 +67,12 @@ from .views import (
 
 DEFAULT_CODEXBAR = "/usr/bin/codexbar"
 DEFAULT_REFRESH_SECONDS = 120
+QT_MAX_TIMER_INTERVAL_MS = 2_147_483_647
+MAX_REFRESH_SECONDS = QT_MAX_TIMER_INTERVAL_MS // 1000
+
+
+def clamp_refresh_seconds(value: int) -> int:
+    return max(30, min(MAX_REFRESH_SECONDS, value))
 
 # Nerd Font / Font Awesome glyphs. These stay plain text, but render as icons
 # when a Nerd Font is installed and selected/fallbacked by KDE's tooltip font.
@@ -194,6 +201,12 @@ def load_usage_from_command(codexbar_bin: str = DEFAULT_CODEXBAR, *, timeout: in
     return normalize_payload(load_usage_payload_from_command(codexbar_bin, timeout=timeout))
 
 
+def _normalized_reset_text(window: WindowUsage) -> str:
+    if window.reset_countdown:
+        return f"resets in {window.reset_countdown}"
+    return window.reset_description
+
+
 def provider_summary_lines(providers: Iterable[ProviderUsage]) -> list[str]:
     lines: list[str] = []
     for provider in providers:
@@ -202,14 +215,15 @@ def provider_summary_lines(providers: Iterable[ProviderUsage]) -> list[str]:
             continue
         bits = []
         for window in provider.windows:
-            reset = f", resets {window.reset_countdown}" if window.reset_countdown else ""
+            reset_text = _normalized_reset_text(window)
+            reset = f", {reset_text}" if reset_text else ""
             bits.append(f"{window.label} {window.used_percent:.0f}%{reset}")
         if provider.credits_remaining is not None:
             bits.append(f"credits {provider.credits_remaining:g}")
         if not bits:
             bits.append("no usage windows")
         lines.append(f"{provider.display_name}: " + "; ".join(bits))
-    return lines
+    return [redact_text(line) for line in lines]
 
 
 def _provider_header(provider: ProviderUsage) -> str:
@@ -226,8 +240,9 @@ def _tray_detail_lines(provider: ProviderUsage) -> list[str]:
     lines = []
     for window in provider.windows:
         line = f"  {window.label}: {window.used_percent:.0f}% used"
-        if window.reset_countdown:
-            line += f" · resets in {window.reset_countdown}"
+        reset_text = _normalized_reset_text(window)
+        if reset_text:
+            line += f" · {reset_text}"
         lines.append(line)
         if window.pace_note:
             lines.append(f"    pace: {window.pace_note}")
@@ -274,23 +289,24 @@ def _wrap_indented(text: str, *, prefix: str, cont_indent: str,
 def _compact_percent(value: object) -> str:
     percent = _percent_value(value)
     if percent is None:
-        text = str(value or "").strip()
-        if not text:
-            return "?%"
-        return text if text.endswith("%") else f"{text}%"
+        return "?%"
     return f"{percent:g}%"
 
 
 def _percent_value(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
-        return max(0.0, min(100.0, float(value)))
-    text = str(value).strip().rstrip("%")
     try:
-        return max(0.0, min(100.0, float(text)))
-    except ValueError:
+        number = (
+            float(value)
+            if isinstance(value, (int, float))
+            else float(str(value).strip().rstrip("%"))
+        )
+    except (ValueError, OverflowError):
         return None
+    if not math.isfinite(number):
+        return None
+    return max(0.0, min(100.0, number))
 
 
 def _usage_bar(value: object, *, width: int = 10) -> str:
@@ -457,12 +473,20 @@ def _primary_usage_windows(usage: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _peak_usage_percent(usage: dict[str, object]) -> float:
-    values = [_percent_value(window.get("usedPercent")) for window in _primary_usage_windows(usage)]
-    values = [value for value in values if value is not None]
+    values: list[float] = []
+    for window in _primary_usage_windows(usage):
+        value = _percent_value(window.get("usedPercent"))
+        if value is not None:
+            values.append(value)
     return max(values, default=0.0)
 
 
-def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
+def _compact_provider_lines(
+    entry: dict[str, object],
+    index: int,
+    *,
+    privacy_mode: bool,
+) -> list[str]:
     usage = _as_dict(entry.get("usage"))
     identity = _as_dict(usage.get("identity"))
     credits = _as_dict(entry.get("credits"))
@@ -483,9 +507,10 @@ def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
 
     lines = [nf(NF_OK, f"{header}  {_peak_usage_percent(usage):g}% peak")]
 
-    account = usage.get("accountEmail") or identity.get("accountEmail")
+    account = usage.get("accountEmail") or entry.get("accountEmail") or identity.get("email")
     if account:
-        lines.append(f"  {nf(NF_ACCOUNT, f'Account: {account}')}")
+        account_text = "[REDACTED]" if privacy_mode else str(account)
+        lines.append(f"  {nf(NF_ACCOUNT, f'Account: {account_text}')}")
 
     plan = usage.get("loginMethod") or identity.get("loginMethod")
     confidence = usage.get("dataConfidence")
@@ -528,15 +553,26 @@ def _compact_provider_lines(entry: dict[str, object], index: int) -> list[str]:
     return lines
 
 
-def _raw_payload_lines(raw_payload: object) -> list[str]:
+def format_payload_lines(
+    raw_payload: object,
+    *,
+    privacy_mode: bool = True,
+) -> list[str]:
     entries = raw_payload if isinstance(raw_payload, list) else [raw_payload]
     lines: list[str] = []
     for index, entry in enumerate(entries, start=1):
         if index > 1:
             lines.append("")
         if isinstance(entry, dict):
-            lines.extend(_compact_provider_lines(entry, index))
-    return lines
+            lines.extend(
+                _compact_provider_lines(
+                    entry,
+                    index,
+                    privacy_mode=privacy_mode,
+                )
+            )
+    redactor = redact_text if privacy_mode else redact_credentials
+    return [redactor(line) for line in lines]
 
 
 def _provider_count(raw_payload: object | None, providers: Iterable[ProviderUsage]) -> int:
@@ -547,7 +583,13 @@ def _provider_count(raw_payload: object | None, providers: Iterable[ProviderUsag
     return len(list(providers))
 
 
-def build_tray_tooltip(providers: Iterable[ProviderUsage], error: str = "", raw_payload: object | None = None) -> str:
+def build_tray_tooltip(
+    providers: Iterable[ProviderUsage],
+    error: str = "",
+    raw_payload: object | None = None,
+    *,
+    privacy_mode: bool = True,
+) -> str:
     """Build the hover text shown by the system tray icon.
 
     KDE/Qt tray tooltips are plain text, so this uses compact typography,
@@ -566,7 +608,9 @@ def build_tray_tooltip(providers: Iterable[ProviderUsage], error: str = "", raw_
 
     if raw_payload is not None:
         lines.append("────────────────────────")
-        lines.extend(_raw_payload_lines(raw_payload))
+        lines.extend(
+            format_payload_lines(raw_payload, privacy_mode=privacy_mode)
+        )
         lines.append("")
         lines.append("Click: dashboard  •  Right-click: menu")
         return "\n".join(lines)
@@ -586,7 +630,8 @@ def build_tray_tooltip(providers: Iterable[ProviderUsage], error: str = "", raw_
                 lines.extend(_tray_detail_lines(provider))
     lines.append("")
     lines.append("Click: dashboard  •  Right-click: menu")
-    return "\n".join(lines)
+    redactor = redact_text if privacy_mode else redact_credentials
+    return "\n".join(redactor(line) for line in lines)
 
 
 class UsageWorker(QThread):
@@ -709,11 +754,18 @@ class DashboardWindow(QMainWindow):
 
     VIEWS = ("Overview", "History", "Burn-down", "Details")
 
-    def __init__(self, *, codexbar_bin: str = DEFAULT_CODEXBAR, refresh_seconds: int = DEFAULT_REFRESH_SECONDS,
-                 history_store: HistoryStore | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        codexbar_bin: str = DEFAULT_CODEXBAR,
+        refresh_seconds: int = DEFAULT_REFRESH_SECONDS,
+        history_store: HistoryStore | None = None,
+        privacy_mode: bool = True,
+    ) -> None:
         super().__init__()
         self.codexbar_bin = codexbar_bin
-        self.refresh_seconds = max(30, refresh_seconds)
+        self.refresh_seconds = clamp_refresh_seconds(refresh_seconds)
+        self.privacy_mode = bool(privacy_mode)
         self.worker: UsageWorker | None = None
         self.redeem_worker: RedeemWorker | None = None
         self._shutting_down = False
@@ -721,6 +773,7 @@ class DashboardWindow(QMainWindow):
         self._history_samples: list[Sample] = []
         self.providers: list[ProviderUsage] = []
         self.raw_payload: object | None = None
+        self.last_error = ""
         self.setWindowTitle("CodexBar KDE")
         self.setMinimumSize(860, 560)
         self.setWindowIcon(make_app_icon())
@@ -791,6 +844,8 @@ class DashboardWindow(QMainWindow):
         self.view_burndown = BurnDownView()
         self.view_burndown.selection_changed.connect(self._update_burndown_chart)
         self.view_details = DetailsView()
+        self.view_details.set_privacy_mode(self.privacy_mode)
+        self.view_details.privacy_changed.connect(self.set_privacy_mode)
         self._views: dict[str, QWidget] = {
             "Overview": self.view_overview,
             "History": self.view_history,
@@ -889,11 +944,36 @@ class DashboardWindow(QMainWindow):
     def details_text(self) -> str:
         return self.view_details.plain_text()
 
+    def set_privacy_mode(self, enabled: bool) -> None:
+        self.privacy_mode = bool(enabled)
+        self.view_details.set_privacy_mode(self.privacy_mode)
+        self._render_details()
+        self.data_changed.emit(self.providers, self.last_error, self.raw_payload)
+
+    def _render_details(self) -> None:
+        if self.raw_payload is not None:
+            payload_lines = format_payload_lines(
+                self.raw_payload,
+                privacy_mode=self.privacy_mode,
+            )
+            self.view_details.set_text("\n".join(payload_lines))
+        elif self.providers:
+            provider_lines: list[str] = []
+            for index, provider in enumerate(self.providers):
+                if index:
+                    provider_lines.append("")
+                provider_lines.append(_provider_header(provider))
+                provider_lines.extend(_tray_detail_lines(provider))
+            self.view_details.set_text("\n".join(provider_lines))
+        else:
+            self.view_details.set_text("No data yet.")
+
     # ---- data --------------------------------------------------------
 
     def set_providers(self, providers: list[ProviderUsage], error: str = "", raw_payload: object | None = None) -> None:
         self.providers = providers
         self.raw_payload = raw_payload
+        self.last_error = error
         self.error_label.setVisible(bool(error))
         self.error_label.setText(error)
         if not providers and not error:
@@ -907,18 +987,7 @@ class DashboardWindow(QMainWindow):
         self.view_burndown.set_options(options)
         self._update_history_chart()
         self._update_burndown_chart()
-        if raw_payload is not None:
-            self.view_details.set_text("\n".join(_raw_payload_lines(raw_payload)))
-        elif providers:
-            lines: list[str] = []
-            for index, provider in enumerate(providers):
-                if index:
-                    lines.append("")
-                lines.append(_provider_header(provider))
-                lines.extend(_tray_detail_lines(provider))
-            self.view_details.set_text("\n".join(lines))
-        else:
-            self.view_details.set_text("No data yet.")
+        self._render_details()
 
         if providers:
             error_count = sum(1 for provider in providers if provider.error)
@@ -1095,6 +1164,8 @@ class TrayController(QObject):
         open_action.triggered.connect(self.show_window)
         menu.addAction(open_action)
         view_menu = menu.addMenu("Views")
+        if view_menu is None:
+            raise RuntimeError("Could not create tray Views menu")
         for name in DashboardWindow.VIEWS:
             action = QAction(name, self)
             action.triggered.connect(lambda _, n=name: self.show_view(n))
@@ -1113,7 +1184,14 @@ class TrayController(QObject):
 
     def _data_changed(self, providers: object, error: str, raw_payload: object) -> None:
         typed_providers = providers if isinstance(providers, list) else []
-        self.tray.setToolTip(build_tray_tooltip(typed_providers, error, raw_payload))
+        self.tray.setToolTip(
+            build_tray_tooltip(
+                typed_providers,
+                error,
+                raw_payload,
+                privacy_mode=self.window.privacy_mode,
+            )
+        )
 
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):

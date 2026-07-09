@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,7 @@ class WindowUsage:
     label: str
     used_percent: float
     resets_at: str | None = None
+    reset_description: str = ""
     reset_countdown: str = ""
     pace_note: str = ""
     window_minutes: int | None = None
@@ -86,11 +88,11 @@ def parse_iso_datetime(value: str | None) -> dt.datetime | None:
     try:
         normalized = value.replace("Z", "+00:00")
         parsed = dt.datetime.fromisoformat(normalized)
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
 
 
 def format_reset_countdown(value: str | None, *, now: dt.datetime | None = None) -> str:
@@ -118,14 +120,16 @@ def format_reset_countdown(value: str | None, *, now: dt.datetime | None = None)
 def _number(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip().rstrip("%"))
-        except ValueError:
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)
+        elif isinstance(value, str):
+            number = float(value.strip().rstrip("%"))
+        else:
             return None
-    return None
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _used_percent(window: dict[str, Any]) -> float | None:
@@ -151,6 +155,14 @@ def _reset_value(window: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
+
+
+def _reset_description(window: dict[str, Any]) -> str:
+    for key in ("resetDescription", "reset_description"):
+        value = window.get(key)
+        if value:
+            return str(value).strip()
+    return ""
 
 
 def _window_minutes(window: dict[str, Any]) -> int | None:
@@ -202,7 +214,8 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
         if not isinstance(raw_entry, dict):
             continue
         provider = str(raw_entry.get("provider") or "provider").strip().lower()
-        usage = raw_entry.get("usage") if isinstance(raw_entry.get("usage"), dict) else {}
+        raw_usage = raw_entry.get("usage")
+        usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         raw_pace = raw_entry.get("pace")
         pace = raw_pace if isinstance(raw_pace, dict) else {}
         windows: list[WindowUsage] = []
@@ -220,6 +233,7 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
                 label=_window_label(key, window),
                 used_percent=round(used, 1),
                 resets_at=reset,
+                reset_description=_reset_description(window),
                 reset_countdown=format_reset_countdown(reset, now=now),
                 pace_note=_pace_note(pace.get(key)),
                 window_minutes=_window_minutes(window),
@@ -243,6 +257,7 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
                     label=label,
                     used_percent=round(used, 1),
                     resets_at=reset,
+                    reset_description=_reset_description(window),
                     reset_countdown=format_reset_countdown(reset, now=now),
                     window_minutes=_window_minutes(window),
                 ))

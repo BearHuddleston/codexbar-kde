@@ -6,12 +6,15 @@ from unittest.mock import patch
 from codexbar_kde.app import (
     build_codexbar_command,
     build_tray_tooltip,
+    clamp_refresh_seconds,
     color_for_percent,
+    format_payload_lines,
     format_updated_age,
     load_usage_from_json_text,
     load_usage_payload_from_command,
     progress_style,
     provider_accent_color,
+    provider_summary_lines,
     redact_text,
     RedeemWorker,
 )
@@ -134,6 +137,90 @@ class AppTests(unittest.TestCase):
         self.assertIn("  5h/session: 0% used", tooltip)
         self.assertIn("  weekly: 22% used", tooltip)
         self.assertNotIn("person@example.com", tooltip)
+
+    def test_payload_formatter_is_private_by_default_and_shared_with_tray(self):
+        payload = [{
+            "provider": "codex",
+            "source": "token=REVIEW_PRIVACY_SECRET_123456",
+            "version": "0.1",
+            "usage": {
+                "accountEmail": "person@example.com",
+                "loginMethod": "pro",
+                "primary": {"usedPercent": 33},
+            },
+        }]
+        providers = load_usage_from_json_text(json.dumps(payload))
+
+        private_text = "\n".join(format_payload_lines(payload))
+        revealed_text = "\n".join(
+            format_payload_lines(payload, privacy_mode=False)
+        )
+        tooltip = build_tray_tooltip(providers, raw_payload=payload)
+
+        self.assertNotIn("person@example.com", private_text)
+        self.assertIn("Account: [REDACTED]", private_text)
+        self.assertIn("person@example.com", revealed_text)
+        self.assertNotIn("REVIEW_PRIVACY_SECRET_123456", private_text)
+        self.assertNotIn("REVIEW_PRIVACY_SECRET_123456", revealed_text)
+        self.assertIn(private_text, tooltip)
+
+    def test_normalized_summaries_preserve_reset_descriptions(self):
+        payload = [{
+            "provider": "claude",
+            "usage": {
+                "primary": {
+                    "usedPercent": 12,
+                    "resetDescription": "Resets4pm(America/Chicago)",
+                }
+            },
+        }]
+        providers = load_usage_from_json_text(json.dumps(payload))
+
+        summary = "\n".join(provider_summary_lines(providers))
+        tooltip = build_tray_tooltip(providers)
+
+        self.assertIn("Resets4pm(America/Chicago)", summary)
+        self.assertIn("Resets4pm(America/Chicago)", tooltip)
+
+    def test_normalized_summaries_always_redact_credentials(self):
+        secret = "FALLBACK_RESET_SECRET_123456"
+        payload = [{
+            "provider": "claude",
+            "usage": {
+                "primary": {
+                    "usedPercent": 12,
+                    "resetDescription": f"token={secret}",
+                }
+            },
+        }]
+        providers = load_usage_from_json_text(json.dumps(payload))
+
+        summary = "\n".join(provider_summary_lines(providers))
+        tooltip = build_tray_tooltip(
+            providers,
+            privacy_mode=False,
+        )
+
+        self.assertNotIn(secret, summary)
+        self.assertNotIn(secret, tooltip)
+
+    def test_payload_formatter_rejects_nonfinite_and_overflowing_percentages(self):
+        payload = [{
+            "provider": "codex",
+            "usage": {
+                "primary": {"usedPercent": 10 ** 5000},
+                "secondary": {"usedPercent": "NaN"},
+            },
+        }]
+
+        text = "\n".join(format_payload_lines(payload))
+
+        self.assertIn("5h/session: ?% used", text)
+        self.assertIn("weekly: ?% used", text)
+
+    def test_refresh_seconds_are_clamped_to_qt_timer_bounds(self):
+        self.assertEqual(clamp_refresh_seconds(1), 30)
+        self.assertEqual(clamp_refresh_seconds(2_147_484), 2_147_483)
 
     def test_build_tray_tooltip_redacts_errors(self):
         tooltip = build_tray_tooltip([], "token=abcdef person@example.com")
@@ -396,9 +483,16 @@ class AppTests(unittest.TestCase):
         providers = load_usage_from_json_text(json.dumps(payload))
 
         tooltip = build_tray_tooltip(providers, raw_payload=payload)
+        revealed_tooltip = build_tray_tooltip(
+            providers,
+            raw_payload=payload,
+            privacy_mode=False,
+        )
 
         self.assertIn("Codex (oauth, v0.142.5)", tooltip)
-        self.assertIn("Account: person@example.com", tooltip)
+        self.assertIn("Account: [REDACTED]", tooltip)
+        self.assertNotIn("person@example.com", tooltip)
+        self.assertIn("Account: person@example.com", revealed_tooltip)
         self.assertIn("Plan: pro · confidence: exact", tooltip)
         self.assertIn("5h/session: 1% used", tooltip)
         self.assertIn("↳ resets tomorrow, 1:03 AM", tooltip)

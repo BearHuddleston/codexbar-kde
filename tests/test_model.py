@@ -4,6 +4,7 @@ import unittest
 from codexbar_kde.model import (
     format_reset_countdown,
     normalize_payload,
+    parse_iso_datetime,
     sanitize_for_debug,
     severity_for_percent,
 )
@@ -87,6 +88,37 @@ class ModelTests(unittest.TestCase):
         notes = {w.key: w.pace_note for w in providers[0].windows}
         self.assertEqual(notes["primary"], "30% reserve · expected 66% · lasts to reset")
         self.assertEqual(notes["secondary"], "12% over pace · expected 40% · may run out before reset")
+
+    def test_normalize_payload_preserves_human_reset_descriptions(self):
+        payload = {
+            "provider": "claude",
+            "usage": {
+                "primary": {
+                    "usedPercent": 12,
+                    "resetDescription": "Resets4pm(America/Chicago)",
+                }
+            },
+        }
+
+        window = normalize_payload(payload)[0].windows[0]
+
+        self.assertIsNone(window.resets_at)
+        self.assertEqual(window.reset_countdown, "")
+        self.assertEqual(window.reset_description, "Resets4pm(America/Chicago)")
+
+    def test_normalize_payload_rejects_nonfinite_and_overflowing_percentages(self):
+        payload = [
+            {"provider": "nan", "usage": {"primary": {"usedPercent": "NaN"}}},
+            {"provider": "huge", "usage": {"primary": {"usedPercent": 10 ** 5000}}},
+        ]
+
+        providers = normalize_payload(payload)
+
+        self.assertEqual(providers[0].windows, [])
+        self.assertEqual(providers[1].windows, [])
+
+    def test_parse_iso_datetime_rejects_overflowing_utc_conversion(self):
+        self.assertIsNone(parse_iso_datetime("0001-01-01T00:00:00+23:59"))
 
     def test_normalize_payload_keeps_window_minutes(self):
         payload = {
