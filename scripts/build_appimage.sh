@@ -84,6 +84,7 @@ rm -f \
     "$APPDIR/python3.11.14.desktop" \
     "$APPDIR/python.png" \
     "$APPDIR/usr/share/applications/python3.11.14.desktop" \
+    "$APPDIR/usr/share/icons/hicolor/256x256/apps/python.png" \
     "$APPDIR/usr/share/metainfo/python3.11.14.appdata.xml"
 mkdir -p \
     "$APPDIR/usr/share/applications" \

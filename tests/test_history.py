@@ -12,7 +12,7 @@ from codexbar_kde.history import (
     burn_down_series,
     daily_peaks,
 )
-from codexbar_kde.model import normalize_payload
+from codexbar_kde.model import ProviderUsage, WindowUsage, normalize_payload
 
 
 def _providers(percent_primary: float, percent_secondary: float = 0.0):
@@ -46,6 +46,29 @@ class HistoryStoreTests(unittest.TestCase):
         self.assertEqual(samples[0].windows["primary"], 10.0)
         self.assertEqual(samples[1].windows["primary"], 20.0)
         self.assertEqual(samples[1].windows["secondary"], 6.0)
+
+    def test_record_replaces_unsafe_identifiers_before_persisting(self):
+        secret = "REVIEW_HISTORY_SECRET_123456"
+        provider = ProviderUsage(
+            provider=f"token={secret}",
+            display_name="Unsafe",
+            source="",
+            version="",
+            windows=[
+                WindowUsage(
+                    key=f"password={secret}",
+                    label="Unsafe",
+                    used_percent=10,
+                )
+            ],
+        )
+
+        samples = HistoryStore(self.path).record([provider])
+        persisted = self.path.read_text(encoding="utf-8")
+
+        self.assertNotIn(secret, persisted)
+        self.assertEqual(samples[0].provider, "provider")
+        self.assertEqual(samples[0].windows, {"window1": 10})
 
     def test_load_survives_corrupt_lines(self):
         store = HistoryStore(self.path)

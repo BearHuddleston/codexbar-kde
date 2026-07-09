@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,21 @@ PROVIDER_NAMES = {
     "minimax": "MiniMax",
     "ollama": "Ollama",
 }
+
+_IDENTIFIER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+def safe_identifier(value: Any, fallback: str = "") -> str:
+    """Return a bounded non-sensitive storage/UI identifier or ``fallback``."""
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip()
+    if not text or len(text) > 64:
+        return fallback
+    text = text.lower()
+    if not _IDENTIFIER_RE.fullmatch(text) or redact_text(text) != text:
+        return fallback
+    return text
 
 
 @dataclass(frozen=True)
@@ -224,7 +240,7 @@ def normalize_payload(
     for raw_entry in entries:
         if not isinstance(raw_entry, dict):
             continue
-        provider = str(raw_entry.get("provider") or "provider").strip().lower()
+        provider = safe_identifier(raw_entry.get("provider"), "provider")
         raw_usage = raw_entry.get("usage")
         usage: dict[str, Any] = raw_usage if isinstance(raw_usage, dict) else {}
         raw_pace = raw_entry.get("pace")
@@ -263,7 +279,9 @@ def normalize_payload(
                 if used is None:
                     continue
                 reset = _reset_value(window)
-                key = str(extra.get("key") or extra.get("id") or f"extra{index}")
+                key = safe_identifier(
+                    extra.get("key") or extra.get("id"), f"extra{index}"
+                )
                 label = str(extra.get("title") or "").strip() or _window_label(
                     key, window
                 )

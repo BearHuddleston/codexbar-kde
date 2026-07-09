@@ -46,6 +46,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("APPIMAGE_OFFLINE", script)
         self.assertIn("$APPDIR/python3.11.14.desktop", script)
         self.assertIn("$APPDIR/python.png", script)
+        self.assertIn("$APPDIR/usr/share/icons/hicolor/256x256/apps/python.png", script)
         self.assertIn('rm -f "$APPDIR/.DirIcon"', script)
         self.assertNotIn("continuous", script)
         self.assertEqual(requirements.count("--hash=sha256:"), 3)

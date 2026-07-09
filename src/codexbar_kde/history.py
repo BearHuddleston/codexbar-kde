@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator
 
-from .model import ProviderUsage, parse_iso_datetime
+from .model import ProviderUsage, parse_iso_datetime, safe_identifier
 
 
 def default_history_path() -> Path:
@@ -122,7 +122,7 @@ class HistoryStore:
         raw_windows = data.get("windows")
         if not isinstance(raw_ts, str) or not isinstance(provider, str):
             return None
-        provider = provider.strip()
+        provider = safe_identifier(provider)
         try:
             ts = parse_iso_datetime(raw_ts)
             if ts is not None:
@@ -133,14 +133,17 @@ class HistoryStore:
             return None
         windows: dict[str, float] = {}
         for key, raw_value in raw_windows.items():
-            if not isinstance(key, str) or not key or isinstance(raw_value, bool):
+            if not isinstance(key, str) or isinstance(raw_value, bool):
+                continue
+            safe_key = safe_identifier(key)
+            if not safe_key:
                 continue
             try:
                 value = float(raw_value)
             except (TypeError, ValueError, OverflowError):
                 continue
             if math.isfinite(value) and 0.0 <= value <= 100.0:
-                windows[key] = value
+                windows[safe_key] = value
         if not windows:
             return None
         return Sample(ts=ts, provider=provider, windows=windows)
@@ -156,8 +159,17 @@ class HistoryStore:
         for provider in providers:
             if provider.error or not provider.windows:
                 continue
-            windows = {w.key: w.used_percent for w in provider.windows}
-            samples.append(Sample(ts=now, provider=provider.provider, windows=windows))
+            windows = {
+                safe_identifier(window.key, f"window{index}"): window.used_percent
+                for index, window in enumerate(provider.windows, start=1)
+            }
+            samples.append(
+                Sample(
+                    ts=now,
+                    provider=safe_identifier(provider.provider, "provider"),
+                    windows=windows,
+                )
+            )
         if not samples:
             return []
         payload = (

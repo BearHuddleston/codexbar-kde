@@ -5,6 +5,7 @@ from codexbar_kde.model import (
     format_reset_countdown,
     normalize_payload,
     parse_iso_datetime,
+    safe_identifier,
     sanitize_for_debug,
     severity_for_percent,
 )
@@ -78,6 +79,36 @@ class ModelTests(unittest.TestCase):
 
         labels = [(w.label, w.used_percent) for w in providers[0].windows]
         self.assertIn(("Codex Spark 5-hour", 40.0), labels)
+
+    def test_normalize_payload_replaces_unsafe_identifier_fields(self):
+        secret = "REVIEW_IDENTIFIER_SECRET_123456"
+        payload = {
+            "provider": f"token={secret}",
+            "usage": {
+                "primary": {"usedPercent": 5},
+                "extraRateWindows": [
+                    {
+                        "id": f"password={secret}",
+                        "title": "Additional window",
+                        "usedPercent": 40,
+                    }
+                ],
+            },
+        }
+
+        provider = normalize_payload(payload)[0]
+
+        self.assertEqual(provider.provider, "provider")
+        self.assertEqual(
+            [window.key for window in provider.windows], ["primary", "extra1"]
+        )
+        self.assertNotIn(secret, provider.provider)
+        self.assertNotIn(secret, "\n".join(window.key for window in provider.windows))
+
+    def test_safe_identifier_rejects_nonstring_and_overlong_values(self):
+        self.assertEqual(safe_identifier(10**5000, "provider"), "provider")
+        self.assertEqual(safe_identifier("a" * 65, "provider"), "provider")
+        self.assertEqual(safe_identifier("Codex-Spark", "provider"), "codex-spark")
 
     def test_normalize_payload_attaches_pace_notes_to_windows(self):
         payload = {
