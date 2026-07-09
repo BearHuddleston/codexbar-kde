@@ -1,0 +1,6 @@
+PyQt6==6.7.1 \
+    --hash=sha256:c2f202b7941aa74e5c7e1463a6f27d9131dbc1e6cabe85571d7364f5b3de7397
+PyQt6-Qt6==6.7.1 \
+    --hash=sha256:9fbab2a96d72d77d16021e259ef86a1a3c87adb0e7eebcc92df0d39f3fdf7e27
+PyQt6-sip==13.8.0 \
+    --hash=sha256:a5c086b7c9c7996ea9b7522646cc24eebbf3591ec9dd38f65c0a3fdb0dbeaac7

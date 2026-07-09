@@ -1256,7 +1256,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("CodexBar KDE")
     app.setApplicationDisplayName("CodexBar KDE")
     try:
-        app.setDesktopFileName("codexbar-kde.desktop")
+        app.setDesktopFileName("io.github.BearHuddleston.codexbar_kde")
     except AttributeError:
         pass
     app.setQuitOnLastWindowClosed(args.no_tray)
