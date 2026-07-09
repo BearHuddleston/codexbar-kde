@@ -7,7 +7,6 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
 from typing import Iterable
 
 from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
@@ -28,13 +27,21 @@ from PyQt6.QtWidgets import (
 )
 
 from .history import HistoryStore, burn_down_series, daily_peaks
-from .model import ProviderUsage, WindowUsage, normalize_payload, parse_iso_datetime, provider_display_name, severity_for_percent
+from .model import (
+    ProviderUsage,
+    WindowUsage as WindowUsage,
+    normalize_payload,
+    parse_iso_datetime,
+    provider_display_name,
+    severity_for_percent as severity_for_percent,
+)
+from .privacy import redact_text
 from .reset import (
     CodexAuthError,
     CodexResetError,
-    consume_reset_credit,
     credits_from_usage_payload,
     load_codex_auth,
+    redeem_reset_credit,
 )
 from .views import (
     BG,
@@ -47,9 +54,9 @@ from .views import (
     DetailsView,
     HistoryView,
     OverviewView,
-    color_for_percent,
+    color_for_percent as color_for_percent,
     latest_reset_at,
-    progress_style,
+    progress_style as progress_style,
     provider_accent_color,
     window_options,
 )
@@ -74,28 +81,6 @@ ICON_GAP = "   "
 
 def nf(icon: str, text: str) -> str:
     return f"{icon}{ICON_GAP}{text}"
-
-_SECRET_RE = re.compile(
-    r"(bearer\s+)[a-z0-9._~+/-]+|"
-    r"(token|secret|password|cookie|api[_-]?key)([=:]\s*)[^\s,;]+|"
-    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
-    re.IGNORECASE,
-)
-
-
-def redact_text(text: str) -> str:
-    if not text:
-        return ""
-
-    def repl(match: re.Match[str]) -> str:
-        if match.group(1):
-            return match.group(1) + "[REDACTED]"
-        if match.group(2):
-            return match.group(2) + match.group(3) + "[REDACTED]"
-        return "[REDACTED]"
-
-    return _SECRET_RE.sub(repl, text)
-
 
 def build_codexbar_command(codexbar_bin: str = DEFAULT_CODEXBAR) -> list[str]:
     return [codexbar_bin, "usage", "--format", "json", "--json-only", "--pretty"]
@@ -555,10 +540,13 @@ class RedeemWorker(QThread):
     def run(self) -> None:
         try:
             token, account_id = load_codex_auth()
-            result = consume_reset_credit(token, account_id, self.credit_id)
+            result = redeem_reset_credit(token, account_id, self.credit_id)
             windows = result.get("windows_reset")
             redeemed_at = (result.get("credit") or {}).get("redeemed_at") or ""
-            message = f"Redeemed — windows reset: {windows}"
+            if result.get("reconciled"):
+                message = "Redeemed — confirmed after status refresh"
+            else:
+                message = f"Redeemed — windows reset: {windows}"
             if redeemed_at:
                 message += f" · {redeemed_at}"
             self.finished_with_result.emit(True, message)

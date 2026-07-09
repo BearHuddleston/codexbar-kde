@@ -12,6 +12,8 @@ from codexbar_kde.app import (
     load_usage_payload_from_command,
     progress_style,
     provider_accent_color,
+    redact_text,
+    RedeemWorker,
 )
 
 
@@ -65,6 +67,40 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(payload[1]["error"]["message"], "rate limited")
 
+    def test_command_failure_redacts_json_credentials(self):
+        secret = "REVIEW_STDERR_SECRET_123456"
+        completed = subprocess.CompletedProcess(
+            ["/usr/bin/codexbar"],
+            2,
+            stdout="",
+            stderr=f'{{"access_token": "{secret}"}}',
+        )
+        with patch("codexbar_kde.app.subprocess.run", return_value=completed):
+            with self.assertRaises(RuntimeError) as raised:
+                load_usage_payload_from_command("/usr/bin/codexbar")
+
+        self.assertIn("[REDACTED]", str(raised.exception))
+        self.assertNotIn(secret, str(raised.exception))
+
+    def test_redeem_worker_revalidates_and_reports_reconciled_success(self):
+        worker = RedeemWorker("RateLimitResetCredit_a")
+        emitted = []
+        worker.finished_with_result.connect(lambda ok, message: emitted.append((ok, message)))
+        result = {
+            "code": "reset",
+            "windows_reset": None,
+            "credit": {"id": "RateLimitResetCredit_a", "status": "redeemed"},
+            "reconciled": True,
+        }
+        with (
+            patch("codexbar_kde.app.load_codex_auth", return_value=("tok", "acct")),
+            patch("codexbar_kde.app.redeem_reset_credit", return_value=result) as redeem,
+        ):
+            worker.run()
+
+        redeem.assert_called_once_with("tok", "acct", "RateLimitResetCredit_a")
+        self.assertEqual(emitted, [(True, "Redeemed — confirmed after status refresh")])
+
     def test_build_tray_tooltip_shows_expanded_provider_details_without_identity(self):
         text = json.dumps([
             {
@@ -106,6 +142,62 @@ class AppTests(unittest.TestCase):
         self.assertIn("token=[REDACTED]", tooltip)
         self.assertNotIn("abcdef", tooltip)
         self.assertNotIn("person@example.com", tooltip)
+
+    def test_redact_text_handles_json_credentials(self):
+        secret = "REVIEW_SECRET_123456"
+
+        redacted = redact_text(f'{{"access_token": "{secret}"}}')
+
+        self.assertIn("[REDACTED]", redacted)
+        self.assertNotIn(secret, redacted)
+
+    def test_redact_text_handles_common_unstructured_credentials(self):
+        cases = {
+            "token = REVIEW_TOKEN_123456": "REVIEW_TOKEN_123456",
+            "'api_key': 'REVIEW_KEY_123456'": "REVIEW_KEY_123456",
+            "Authorization: Basic REVIEW_BASIC_123456": "REVIEW_BASIC_123456",
+            "request failed for https://person:REVIEW_PASS_123456@example.com/path": "REVIEW_PASS_123456",
+            "eyJhbGciOiJIUzI1NiJ9.REVIEWPAYLOAD123456.REVIEW_SIGNATURE_123456": "REVIEW_SIGNATURE_123456",
+            "OpenAI key sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456": "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+            "Anthropic key sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456": "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456",
+            "Gemini key AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ123456789": "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ123456789",
+        }
+        for text, secret in cases.items():
+            with self.subTest(text=text):
+                redacted = redact_text(text)
+                self.assertIn("[REDACTED]", redacted)
+                self.assertNotIn(secret, redacted)
+
+    def test_redact_text_handles_quoted_values_with_spaces(self):
+        secret = "two words REVIEW_SPACE_SECRET_123456"
+
+        redacted = redact_text(f'{{"password": "{secret}"}}')
+
+        self.assertIn("[REDACTED]", redacted)
+        self.assertNotIn(secret, redacted)
+        self.assertNotIn("REVIEW_SPACE_SECRET_123456", redacted)
+
+        escaped = r'{"password": "two words \"REVIEW_ESCAPED_SECRET_123456\" tail"}'
+        escaped_redacted = redact_text(escaped)
+        self.assertEqual(escaped_redacted, '{"password": "[REDACTED]"}')
+        self.assertEqual(redact_text(escaped_redacted), escaped_redacted)
+
+    def test_redact_text_handles_quoted_authorization_values(self):
+        for scheme in ("Bearer", "Basic"):
+            secret = f"REVIEW_{scheme.upper()}_SECRET_123456"
+            with self.subTest(scheme=scheme):
+                redacted = redact_text(
+                    f'{{"authorization": "{scheme} {secret}"}}'
+                )
+
+                self.assertIn("[REDACTED]", redacted)
+                self.assertNotIn(secret, redacted)
+
+    def test_redact_text_does_not_hide_plain_basic_language(self):
+        self.assertEqual(
+            redact_text("basic authentication failed"),
+            "basic authentication failed",
+        )
 
     def test_build_tray_tooltip_compacts_provider_error_from_raw_payload(self):
         payload = [{"provider": "claude", "source": "auto", "error": {"message": "Could not parse Claude usage: rate limited"}}]

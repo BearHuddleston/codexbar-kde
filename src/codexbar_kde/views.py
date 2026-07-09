@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 
 from .history import BurnDown, SeriesPoint
 from .model import ProviderUsage, parse_iso_datetime, severity_for_percent
-from .reset import format_expiry, pick_next_expiring
+from .reset import available_reset_credits, format_expiry, pick_next_expiring
 
 # ---------------------------------------------------------------- palette
 
@@ -280,9 +280,16 @@ class ResetCreditPanel(QFrame):
         return self._target_id
 
     def set_credits(self, credits: list[dict]) -> None:
-        self._credits = [c for c in credits if isinstance(c, dict)]
-        available = [c for c in self._credits if c.get("status") == "available"]
+        candidates = [c for c in credits if isinstance(c, dict)]
+        self._credits = available_reset_credits(candidates)
+        available = self._credits
         if not available:
+            self._target_id = ""
+            self.count_label.setText("0 available")
+            self.credit_lines.clear()
+            self.redeem_button.setText("Redeem")
+            self.redeem_button.setEnabled(False)
+            self.status_line.hide()
             self.hide()
             return
         target = pick_next_expiring(available)

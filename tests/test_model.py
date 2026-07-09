@@ -4,6 +4,7 @@ import unittest
 from codexbar_kde.model import (
     format_reset_countdown,
     normalize_payload,
+    sanitize_for_debug,
     severity_for_percent,
 )
 
@@ -113,6 +114,28 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(providers[0].display_name, "Gemini")
         self.assertEqual(providers[0].error, "not configured")
         self.assertEqual(providers[0].windows, [])
+
+    def test_sanitize_for_debug_preserves_sensitive_container_redaction(self):
+        sanitized = sanitize_for_debug({
+            "identity": {"display_name": "Ada"},
+            "organization": "Example Corp",
+            "message": "safe",
+        })
+
+        self.assertEqual(sanitized["identity"], "[REDACTED]")
+        self.assertEqual(sanitized["organization"], "[REDACTED]")
+        self.assertEqual(sanitized["message"], "safe")
+
+    def test_normalize_payload_redacts_provider_errors(self):
+        secret = "REVIEW_PROVIDER_SECRET_123456"
+
+        providers = normalize_payload({
+            "provider": "gemini",
+            "error": {"message": f'failed: {{"access_token": "{secret}"}}'},
+        })
+
+        self.assertIn("[REDACTED]", providers[0].error)
+        self.assertNotIn(secret, providers[0].error)
 
     def test_reset_countdown_and_severity(self):
         now = dt.datetime(2026, 7, 4, 0, 0, 0, tzinfo=dt.timezone.utc)

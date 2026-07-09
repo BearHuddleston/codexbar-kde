@@ -4,6 +4,8 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
+from .privacy import redact_text, sanitize_structure
+
 
 WINDOW_LABELS = {
     "primary": "5h/session",
@@ -28,28 +30,6 @@ PROVIDER_NAMES = {
     "minimax": "MiniMax",
     "ollama": "Ollama",
 }
-
-SENSITIVE_KEYS = {
-    "account",
-    "accountemail",
-    "apikey",
-    "api_key",
-    "authorization",
-    "bearer",
-    "cookie",
-    "credential",
-    "credentials",
-    "email",
-    "identity",
-    "organization",
-    "org",
-    "password",
-    "refresh_token",
-    "secret",
-    "token",
-    "user",
-}
-
 
 @dataclass(frozen=True)
 class WindowUsage:
@@ -184,9 +164,9 @@ def _error_message(entry: dict[str, Any]) -> str:
     error = entry.get("error")
     if isinstance(error, dict):
         msg = error.get("message") or error.get("detail") or error.get("kind")
-        return str(msg or "").strip()
+        return redact_text(str(msg or "").strip())
     if error:
-        return str(error).strip()
+        return redact_text(str(error).strip())
     return ""
 
 
@@ -289,15 +269,4 @@ def normalize_payload(payload: Any, *, now: dt.datetime | None = None) -> list[P
 
 def sanitize_for_debug(value: Any) -> Any:
     """Return a copy safe for logs; not used for normal UI rendering."""
-    if isinstance(value, dict):
-        safe = {}
-        for key, item in value.items():
-            lowered = str(key).replace("-", "_").lower()
-            if lowered in SENSITIVE_KEYS or any(part in lowered for part in ("token", "secret", "cookie", "password", "email")):
-                safe[key] = "[REDACTED]"
-            else:
-                safe[key] = sanitize_for_debug(item)
-        return safe
-    if isinstance(value, list):
-        return [sanitize_for_debug(item) for item in value]
-    return value
+    return sanitize_structure(value)

@@ -1,4 +1,3 @@
-import json
 import os
 import unittest
 
@@ -102,6 +101,23 @@ class UiTests(unittest.TestCase):
         label = panel.redeem_button.text()
         self.assertIn("Redeem", label)
         self.assertIn("expires", label.lower())
+
+    def test_reset_panel_hides_when_all_available_credits_are_expired(self):
+        window = self._window()
+        panel = window.view_overview.reset_panel
+
+        panel.set_credits([
+            {
+                "id": "expired",
+                "status": "available",
+                "expires_at": "2020-01-01T00:00:00Z",
+            }
+        ])
+
+        self.assertFalse(panel.isVisibleTo(window.view_overview))
+        self.assertEqual(panel.credit_count(), 0)
+        self.assertEqual(panel.target_credit_id(), "")
+        self.assertFalse(panel.redeem_button.isEnabled())
 
     def test_reset_panel_hidden_without_codex_credits(self):
         window = DashboardWindow(codexbar_bin="/usr/bin/codexbar", refresh_seconds=3600)
