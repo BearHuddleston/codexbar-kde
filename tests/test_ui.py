@@ -1,16 +1,41 @@
 import os
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QCoreApplication, QEvent
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from codexbar_kde.app import DashboardWindow
+from codexbar_kde.app import DashboardWindow, RedeemWorker, UsageWorker
 from codexbar_kde.model import normalize_payload
 
 
 def _app():
     return QApplication.instance() or QApplication(["codexbar-kde-tests"])
+
+
+def _wait_until(predicate, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        QApplication.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _process_alive(pid):
+    stat_path = Path(f"/proc/{pid}/stat")
+    if not stat_path.exists():
+        return False
+    fields = stat_path.read_text().split()
+    return len(fields) > 2 and fields[2] != "Z"
 
 
 PAYLOAD = [
@@ -125,6 +150,136 @@ class UiTests(unittest.TestCase):
         window.set_providers(normalize_payload(payload), raw_payload=payload)
 
         self.assertFalse(window.view_overview.reset_panel.isVisibleTo(window.view_overview))
+
+    def test_finished_usage_worker_is_released(self):
+        window = self._window()
+        with patch("codexbar_kde.app.load_usage_payload_from_command", return_value=PAYLOAD):
+            window.refresh_now()
+            self.assertTrue(_wait_until(lambda: window.worker is None))
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QApplication.processEvents()
+        self.assertEqual(window.findChildren(UsageWorker), [])
+
+    def test_finished_redeem_worker_is_released(self):
+        window = self._window()
+        result = {
+            "code": "reset",
+            "windows_reset": 1,
+            "credit": {"id": "RateLimitResetCredit_soon", "status": "redeemed"},
+        }
+        with (
+            patch.object(
+                QMessageBox,
+                "question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ),
+            patch("codexbar_kde.app.load_codex_auth", return_value=("tok", "acct")),
+            patch("codexbar_kde.app.redeem_reset_credit", return_value=result),
+            patch.object(window, "refresh_now"),
+        ):
+            window._redeem_reset_credit("RateLimitResetCredit_soon")
+            self.assertTrue(_wait_until(lambda: window.redeem_worker is None))
+
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QApplication.processEvents()
+        self.assertEqual(window.findChildren(RedeemWorker), [])
+
+    def test_shutdown_waits_for_active_redeem_worker(self):
+        window = self._window()
+        result = {
+            "code": "reset",
+            "windows_reset": 1,
+            "credit": {"id": "credit", "status": "redeemed"},
+        }
+
+        def slow_redeem(*_args):
+            time.sleep(0.1)
+            return result
+
+        with (
+            patch("codexbar_kde.app.load_codex_auth", return_value=("tok", "acct")),
+            patch("codexbar_kde.app.redeem_reset_credit", side_effect=slow_redeem),
+        ):
+            worker = RedeemWorker("credit", window)
+            window.redeem_worker = worker
+            worker.start()
+            try:
+                window.shutdown_workers()
+            finally:
+                worker.wait(2_000)
+
+        self.assertFalse(worker.isRunning())
+
+    def test_usage_worker_cancel_terminates_spawned_process_group(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pid_path = root / "pids"
+            script = root / "codexbar"
+            script.write_text(
+                "#!/usr/bin/python3\n"
+                "import os, pathlib, subprocess, sys, time\n"
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'])\n"
+                f"pathlib.Path({str(pid_path)!r}).write_text(f'{{os.getpid()}} {{child.pid}}')\n"
+                "time.sleep(30)\n"
+            )
+            script.chmod(0o755)
+            worker = UsageWorker(str(script))
+            pids = []
+            worker.start()
+            try:
+                self.assertTrue(_wait_until(pid_path.exists))
+                pids = [int(value) for value in pid_path.read_text().split()]
+                worker.cancel()
+                self.assertTrue(worker.wait(3_000))
+                self.assertTrue(
+                    _wait_until(lambda: not any(_process_alive(pid) for pid in pids))
+                )
+            finally:
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(2_000)
+                for pid in pids:
+                    if _process_alive(pid):
+                        os.kill(pid, 9)
+
+    def test_application_quit_with_active_worker_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as td:
+            script = Path(td) / "codexbar"
+            script.write_text(
+                "#!/usr/bin/python3\n"
+                "import subprocess, time\n"
+                "subprocess.Popen(['sleep', '30'])\n"
+                "time.sleep(30)\n"
+            )
+            script.chmod(0o755)
+            program = f"""
+import os
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
+from codexbar_kde.app import DashboardWindow
+app = QApplication(['lifecycle-test'])
+window = DashboardWindow(codexbar_bin={str(script)!r}, refresh_seconds=3600)
+app.aboutToQuit.connect(window.shutdown_workers)
+window.refresh_now()
+QTimer.singleShot(200, app.quit)
+raise SystemExit(app.exec())
+"""
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+            completed = subprocess.run(
+                [sys.executable, "-c", program],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertNotIn("QThread: Destroyed", completed.stderr)
 
 
 if __name__ == "__main__":

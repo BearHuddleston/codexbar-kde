@@ -5,9 +5,12 @@ import datetime as dt
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
-from typing import Iterable
+import threading
+import time
+from typing import Callable, Iterable
 
 from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
@@ -94,9 +97,83 @@ def load_usage_from_json_text(text: str) -> list[ProviderUsage]:
     return normalize_payload(load_usage_payload_from_json_text(text))
 
 
-def load_usage_payload_from_command(codexbar_bin: str = DEFAULT_CODEXBAR, *, timeout: int = 90) -> object:
+class _CommandCancelled(RuntimeError):
+    pass
+
+
+def _stop_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                if process.poll() is None:
+                    process.kill()
+            if process.poll() is None:
+                process.wait()
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def _run_codexbar_command(
+    command: list[str],
+    *,
+    timeout: int,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if cancel_requested is not None and cancel_requested():
+        raise _CommandCancelled("codexbar command cancelled")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel_requested is not None and cancel_requested():
+            _stop_process_group(process)
+            raise _CommandCancelled("codexbar command cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _stop_process_group(process)
+            raise subprocess.TimeoutExpired(command, timeout)
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
+        return subprocess.CompletedProcess(
+            command,
+            process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+def load_usage_payload_from_command(
+    codexbar_bin: str = DEFAULT_CODEXBAR,
+    *,
+    timeout: int = 90,
+    cancel_requested: Callable[[], bool] | None = None,
+) -> object:
     command = build_codexbar_command(codexbar_bin)
-    completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=timeout)
+    completed = _run_codexbar_command(
+        command,
+        timeout=timeout,
+        cancel_requested=cancel_requested,
+    )
     stdout = completed.stdout or ""
     if stdout.strip():
         try:
@@ -518,12 +595,22 @@ class UsageWorker(QThread):
     def __init__(self, codexbar_bin: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.codexbar_bin = codexbar_bin
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self.requestInterruption()
+        self._cancel_event.set()
 
     def run(self) -> None:
         try:
-            raw_payload = load_usage_payload_from_command(self.codexbar_bin)
+            raw_payload = load_usage_payload_from_command(
+                self.codexbar_bin,
+                cancel_requested=self._cancel_event.is_set,
+            )
             providers = normalize_payload(raw_payload)
             self.finished_with_result.emit(providers, "", raw_payload)
+        except _CommandCancelled:
+            return
         except Exception as exc:  # GUI boundary: show sanitized concise error
             self.finished_with_result.emit([], redact_text(str(exc)), None)
 
@@ -597,6 +684,8 @@ class DashboardWindow(QMainWindow):
         self.codexbar_bin = codexbar_bin
         self.refresh_seconds = max(30, refresh_seconds)
         self.worker: UsageWorker | None = None
+        self.redeem_worker: RedeemWorker | None = None
+        self._shutting_down = False
         self.history = history_store or HistoryStore()
         self.providers: list[ProviderUsage] = []
         self.raw_payload: object | None = None
@@ -665,7 +754,6 @@ class DashboardWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.view_overview = OverviewView()
         self.view_overview.reset_panel.redeem_requested.connect(self._redeem_reset_credit)
-        self.redeem_worker: RedeemWorker | None = None
         self.view_history = HistoryView()
         self.view_history.selection_changed.connect(self._update_history_chart)
         self.view_burndown = BurnDownView()
@@ -820,7 +908,9 @@ class DashboardWindow(QMainWindow):
     # ---- reset credits -------------------------------------------------
 
     def _redeem_reset_credit(self, credit_id: str) -> None:
-        if self.redeem_worker and self.redeem_worker.isRunning():
+        if self._shutting_down or (
+            self.redeem_worker and self.redeem_worker.isRunning()
+        ):
             return
         panel = self.view_overview.reset_panel
         confirm = QMessageBox.question(
@@ -837,6 +927,7 @@ class DashboardWindow(QMainWindow):
         panel.set_busy(True, "Redeeming…")
         self.redeem_worker = RedeemWorker(credit_id, self)
         self.redeem_worker.finished_with_result.connect(self._redeem_finished)
+        self.redeem_worker.finished.connect(self._redeem_worker_stopped)
         self.redeem_worker.start()
 
     def _redeem_finished(self, ok: bool, message: str) -> None:
@@ -846,6 +937,12 @@ class DashboardWindow(QMainWindow):
         if ok:
             # Pull fresh usage so windows and the credit list update.
             self.refresh_now()
+
+    def _redeem_worker_stopped(self) -> None:
+        worker = self.redeem_worker
+        self.redeem_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _update_history_chart(self) -> None:
         selection = self.view_history.current_selection()
@@ -892,13 +989,14 @@ class DashboardWindow(QMainWindow):
     # ---- refresh -----------------------------------------------------
 
     def refresh_now(self) -> None:
-        if self.worker and self.worker.isRunning():
+        if self._shutting_down or (self.worker and self.worker.isRunning()):
             return
         self.refresh_button.setEnabled(False)
         self.status_label.setText("Refreshing…")
         self.status_label.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent;")
         self.worker = UsageWorker(self.codexbar_bin, self)
         self.worker.finished_with_result.connect(self._refresh_finished)
+        self.worker.finished.connect(self._usage_worker_stopped)
         self.worker.start()
 
     def _refresh_finished(self, providers: object, error: str, raw_payload: object) -> None:
@@ -911,6 +1009,34 @@ class DashboardWindow(QMainWindow):
             except OSError:
                 pass  # history is best-effort; never break the UI over disk issues
         self.set_providers(typed_providers, error, raw_payload)
+
+    def _usage_worker_stopped(self) -> None:
+        worker = self.worker
+        self.worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def shutdown_workers(self) -> None:
+        """Stop cancellable work and wait for irreversible work before teardown."""
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self.timer.stop()
+
+        usage_worker = self.worker
+        if usage_worker is not None:
+            usage_worker.cancel()
+            usage_worker.wait()
+            self.worker = None
+            usage_worker.deleteLater()
+
+        redeem_worker = self.redeem_worker
+        if redeem_worker is not None:
+            # Redemption may already have issued its irreversible POST. Its
+            # network calls have finite timeouts, so wait rather than aborting.
+            redeem_worker.wait()
+            self.redeem_worker = None
+            redeem_worker.deleteLater()
 
 
 class TrayController(QObject):
@@ -1015,6 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setWindowIcon(icon)
 
     window = DashboardWindow(codexbar_bin=args.codexbar_bin, refresh_seconds=args.refresh_seconds)
+    app.aboutToQuit.connect(window.shutdown_workers)
     tray_controller = None
     if not args.no_tray and QSystemTrayIcon.isSystemTrayAvailable():
         tray_controller = TrayController(window, app)

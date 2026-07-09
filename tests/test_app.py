@@ -62,7 +62,7 @@ class AppTests(unittest.TestCase):
             {"provider": "claude", "source": "auto", "error": {"message": "rate limited"}},
         ])
         completed = subprocess.CompletedProcess(["/usr/bin/codexbar"], 1, stdout=stdout, stderr="")
-        with patch("codexbar_kde.app.subprocess.run", return_value=completed):
+        with patch("codexbar_kde.app._run_codexbar_command", return_value=completed):
             payload = load_usage_payload_from_command("/usr/bin/codexbar")
 
         self.assertEqual(payload[1]["error"]["message"], "rate limited")
@@ -75,7 +75,7 @@ class AppTests(unittest.TestCase):
             stdout="",
             stderr=f'{{"access_token": "{secret}"}}',
         )
-        with patch("codexbar_kde.app.subprocess.run", return_value=completed):
+        with patch("codexbar_kde.app._run_codexbar_command", return_value=completed):
             with self.assertRaises(RuntimeError) as raised:
                 load_usage_payload_from_command("/usr/bin/codexbar")
 
