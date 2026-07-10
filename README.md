@@ -197,10 +197,15 @@ commit timestamp. CI builds twice, requires byte-identical output, smoke-tests
 the final AppImage, and enforces `GLIBC_2.28`, `GLIBCXX_3.4.22`, and
 `CXXABI_1.3.11` ceilings.
 
-The project source is MIT-licensed. The AppImage also bundles PyQt6 and Qt
-components under their upstream licenses (including GPL/commercial terms for
-PyQt6); upstream license metadata and files shipped in those wheels, plus this
-project's `LICENSE`, are preserved inside the artifact.
+The project source is MIT-licensed. The AppImage uses the public GPLv3 build
+of PyQt6 6.7.1—not a Riverbank commercial-license grant—so distribution of
+the combined AppImage must satisfy GPLv3. The bundled Qt wheel contains
+LGPLv3 components and some GPLv3 add-ons; PyQt6-sip and the Python runtime have
+their own terms. Complete license texts, a third-party notice, and an SPDX 2.3
+package SBOM are embedded in the image and emitted beside it. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for exact binary/source
+URLs and hashes, and [`docs/appimage-licensing.md`](docs/appimage-licensing.md)
+for the source-availability and release-sign-off checklist.
 
 Layout:
 

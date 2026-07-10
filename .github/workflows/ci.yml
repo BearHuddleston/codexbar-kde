@@ -17,8 +17,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -39,27 +39,40 @@ jobs:
   quality:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
           cache: pip
       - name: Install quality tools
         run: >-
           python -m pip install --disable-pip-version-check --no-input -e .
-          ruff==0.15.20 mypy==2.2.0
+          ruff==0.15.20 mypy==2.2.0 spdx-tools==0.8.5
       - run: ruff check src tests scripts
       - run: ruff format --check src tests scripts
       - run: mypy src tests scripts
         env:
           MYPYPATH: src
-      - run: git diff --check
+      - name: Validate SPDX package SBOM
+        run: >-
+          pyspdxtools --infile
+          packaging/CodexBar_KDE-x86_64.spdx.json
+      - name: Check committed whitespace (pull request)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git diff --check "$BASE_SHA...HEAD"
+      - name: Check committed whitespace (push or manual)
+        if: github.event_name != 'pull_request'
+        run: git show --check --format= HEAD
 
   appimage:
     name: Reproducible AppImage (glibc 2.28)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
       - name: Install Qt host libraries
@@ -68,13 +81,17 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0
       - name: Build pinned AppImage
-        run: bash scripts/build_appimage.sh
+        run: |
+          umask 022
+          bash scripts/build_appimage.sh
       - name: Save first build
         run: cp dist/CodexBar_KDE-x86_64.AppImage /tmp/first.AppImage
       - name: Rebuild offline
         env:
           APPIMAGE_OFFLINE: 1
-        run: bash scripts/build_appimage.sh
+        run: |
+          umask 077
+          bash scripts/build_appimage.sh
       - name: Require byte-identical output
         run: cmp /tmp/first.AppImage dist/CodexBar_KDE-x86_64.AppImage
       - name: Audit final ABI requirements
@@ -96,8 +113,11 @@ jobs:
           chmod 755 /tmp/fake-codexbar
           "$image" --appimage-extract-and-run --once \
             --codexbar-bin /tmp/fake-codexbar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: CodexBar_KDE-x86_64
-          path: dist/CodexBar_KDE-x86_64.AppImage
+          path: |
+            dist/CodexBar_KDE-x86_64.AppImage
+            dist/THIRD_PARTY_NOTICES.md
+            dist/CodexBar_KDE-x86_64.spdx.json
           if-no-files-found: error
