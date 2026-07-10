@@ -3,9 +3,9 @@
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
   "name": "CodexBar KDE x86_64 AppImage package SBOM",
-  "documentNamespace": "https://github.com/BearHuddleston/codexbar-kde/sbom/appimage-0.1.0-20260709",
+  "documentNamespace": "https://github.com/BearHuddleston/codexbar-kde/sbom/appimage-0.2.0-20260710",
   "creationInfo": {
-    "created": "2026-07-09T00:00:00Z",
+    "created": "2026-07-10T00:00:00Z",
     "creators": [
       "Tool: manual engineering review",
       "Organization: CodexBar KDE project"
@@ -19,7 +19,7 @@
     {
       "name": "CodexBar KDE AppImage",
       "SPDXID": "SPDXRef-CodexBar-KDE-AppImage",
-      "versionInfo": "0.1.0",
+      "versionInfo": "0.2.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "GPL-3.0-only AND LGPL-3.0-only AND MIT AND Python-2.0 AND LicenseRef-PyQt6-sip",
@@ -30,7 +30,7 @@
     {
       "name": "CodexBar KDE",
       "SPDXID": "SPDXRef-CodexBar-KDE",
-      "versionInfo": "0.1.0",
+      "versionInfo": "0.2.0",
       "downloadLocation": "https://github.com/BearHuddleston/codexbar-kde",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
@@ -40,7 +40,7 @@
         {
           "referenceCategory": "PACKAGE-MANAGER",
           "referenceType": "purl",
-          "referenceLocator": "pkg:pypi/codexbar-kde@0.1.0"
+          "referenceLocator": "pkg:pypi/codexbar-kde@0.2.0"
         }
       ]
     },
@@ -135,7 +135,7 @@
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
-      "sourceInfo": "Aggregate from https://github.com/niess/python-appimage/tree/python3.11; embedded upstream license files are retained."
+      "sourceInfo": "Aggregate from python-appimage commit 984f77af087e2e514d3b3ab64fb01d57ba2eb76e. Release source mirror: https://github.com/BearHuddleston/codexbar-kde/releases/download/v0.2.0/python-appimage-984f77af087e2e514d3b3ab64fb01d57ba2eb76e.tar.gz (SHA256 8d9c8297ea699cbe6ec92381d7748e7ce54eff498ea0489f79d6049074433948). Embedded upstream license files are retained."
     },
     {
       "name": "CPython",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -38,6 +39,34 @@ def load_appdir_normalizer() -> ModuleType:
 
 
 class PackagingTests(unittest.TestCase):
+    def test_release_metadata_versions_are_aligned(self):
+        init = (ROOT / "src/codexbar_kde/__init__.py").read_text(encoding="utf-8")
+        match = re.search(r'^__version__ = "([0-9]+\.[0-9]+\.[0-9]+)"$', init, re.M)
+        self.assertIsNotNone(match)
+        version = match.group(1) if match else ""
+
+        notice = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        appstream = (
+            ROOT / "packaging/io.github.BearHuddleston.codexbar_kde.appdata.xml"
+        ).read_text(encoding="utf-8")
+        sbom = json.loads(
+            (ROOT / "packaging/CodexBar_KDE-x86_64.spdx.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        packages = {package["name"]: package for package in sbom["packages"]}
+
+        self.assertIn(f"CodexBar KDE {version} — MIT", notice)
+        self.assertIn(f"releases/download/v{version}", notice)
+        self.assertIn(f'<release version="{version}"', appstream)
+        self.assertEqual(packages["CodexBar KDE AppImage"]["versionInfo"], version)
+        self.assertEqual(packages["CodexBar KDE"]["versionInfo"], version)
+        self.assertIn(
+            f"pkg:pypi/codexbar-kde@{version}",
+            str(packages["CodexBar KDE"]["externalRefs"]),
+        )
+        self.assertIn(f"appimage-{version}-", sbom["documentNamespace"])
+
     def test_metadata_uses_maintained_setuptools_and_pep639_license(self):
         text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
         if tomllib is None:
