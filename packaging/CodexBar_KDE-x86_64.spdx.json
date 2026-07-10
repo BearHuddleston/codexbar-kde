@@ -1,0 +1,204 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "CodexBar KDE x86_64 AppImage package SBOM",
+  "documentNamespace": "https://github.com/BearHuddleston/codexbar-kde/sbom/appimage-0.1.0-20260709",
+  "creationInfo": {
+    "created": "2026-07-09T00:00:00Z",
+    "creators": [
+      "Tool: manual engineering review",
+      "Organization: CodexBar KDE project"
+    ],
+    "licenseListVersion": "3.27"
+  },
+  "documentDescribes": [
+    "SPDXRef-CodexBar-KDE-AppImage"
+  ],
+  "packages": [
+    {
+      "name": "CodexBar KDE AppImage",
+      "SPDXID": "SPDXRef-CodexBar-KDE-AppImage",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "GPL-3.0-only AND LGPL-3.0-only AND MIT AND Python-2.0 AND LicenseRef-PyQt6-sip",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "summary": "Pinned x86_64 AppImage aggregate; see THIRD_PARTY_NOTICES.md."
+    },
+    {
+      "name": "CodexBar KDE",
+      "SPDXID": "SPDXRef-CodexBar-KDE",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "https://github.com/BearHuddleston/codexbar-kde",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/codexbar-kde@0.1.0"
+        }
+      ]
+    },
+    {
+      "name": "PyQt6",
+      "SPDXID": "SPDXRef-PyQt6",
+      "versionInfo": "6.7.1",
+      "packageFileName": "PyQt6-6.7.1-1-cp38-abi3-manylinux_2_28_x86_64.whl",
+      "downloadLocation": "https://files.pythonhosted.org/packages/e4/d3/8789879c05cfe06127c4b59258632bd175fcdd9eaaadaf0c897b458fb91d/PyQt6-6.7.1-1-cp38-abi3-manylinux_2_28_x86_64.whl",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c2f202b7941aa74e5c7e1463a6f27d9131dbc1e6cabe85571d7364f5b3de7397"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "NOASSERTION",
+      "sourceInfo": "Corresponding source: https://files.pythonhosted.org/packages/d1/f9/b0c2ba758b14a7219e076138ea1e738c068bf388e64eee68f3df4fc96f5a/PyQt6-6.7.1.tar.gz (SHA256 3672a82ccd3a62e99ab200a13903421e2928e399fda25ced98d140313ad59cb9)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyqt6@6.7.1"
+        }
+      ]
+    },
+    {
+      "name": "Qt",
+      "SPDXID": "SPDXRef-Qt",
+      "versionInfo": "6.7.1",
+      "packageFileName": "PyQt6_Qt6-6.7.1-py3-none-manylinux_2_28_x86_64.whl",
+      "downloadLocation": "https://files.pythonhosted.org/packages/57/56/b653a011af4b821b1ad0b20b554f351cf8331127ffd4cd60696bc8576655/PyQt6_Qt6-6.7.1-py3-none-manylinux_2_28_x86_64.whl",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "9fbab2a96d72d77d16021e259ef86a1a3c87adb0e7eebcc92df0d39f3fdf7e27"
+        }
+      ],
+      "licenseConcluded": "LGPL-3.0-only AND GPL-3.0-only",
+      "licenseDeclared": "LGPL-3.0-only AND GPL-3.0-only",
+      "copyrightText": "Copyright (C) The Qt Company Ltd. and other contributors",
+      "sourceInfo": "Corresponding source: https://download.qt.io/archive/qt/6.7/6.7.1/single/qt-everywhere-src-6.7.1.tar.xz (SHA256 38dbf2768776e875ed5cdea8cccf1a240512a29769768084430914c4a33bedc4)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyqt6-qt6@6.7.1"
+        }
+      ]
+    },
+    {
+      "name": "PyQt6-sip",
+      "SPDXID": "SPDXRef-PyQt6-sip",
+      "versionInfo": "13.8.0",
+      "packageFileName": "PyQt6_sip-13.8.0-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.whl",
+      "downloadLocation": "https://files.pythonhosted.org/packages/4f/db/f453a866d5bdadc98a48f457f6af0794ea0de5b806156eb9d74c7b25a08e/PyQt6_sip-13.8.0-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.whl",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a5c086b7c9c7996ea9b7522646cc24eebbf3591ec9dd38f65c0a3fdb0dbeaac7"
+        }
+      ],
+      "licenseConcluded": "LicenseRef-PyQt6-sip",
+      "licenseDeclared": "LicenseRef-PyQt6-sip",
+      "copyrightText": "Copyright 2024 Phil Thompson",
+      "sourceInfo": "Corresponding source: https://files.pythonhosted.org/packages/e9/b7/95ac49b181096ef40144ef05aff8de7c9657de7916a70533d202ed9f0fd2/PyQt6_sip-13.8.0.tar.gz (SHA256 2f74cf3d6d9cab5152bd9f49d570b2dfb87553ebb5c4919abfde27f5b9fd69d4)",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:pypi/pyqt6-sip@13.8.0"
+        }
+      ]
+    },
+    {
+      "name": "Python AppImage base",
+      "SPDXID": "SPDXRef-Python-AppImage",
+      "versionInfo": "3.11.14-manylinux_2_28",
+      "packageFileName": "python3.11.14-cp311-cp311-manylinux_2_28_x86_64.AppImage",
+      "downloadLocation": "https://github.com/niess/python-appimage/releases/download/python3.11/python3.11.14-cp311-cp311-manylinux_2_28_x86_64.AppImage",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "89ff05124b2fcbecbd46006be5b477760907cccb13518054fa67a4356b8215f3"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "sourceInfo": "Aggregate from https://github.com/niess/python-appimage/tree/python3.11; embedded upstream license files are retained."
+    },
+    {
+      "name": "CPython",
+      "SPDXID": "SPDXRef-CPython",
+      "versionInfo": "3.11.14",
+      "packageFileName": "Python-3.11.14.tar.xz",
+      "downloadLocation": "https://www.python.org/ftp/python/3.11.14/Python-3.11.14.tar.xz",
+      "filesAnalyzed": false,
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "8d3ed8ec5c88c1c95f5e558612a725450d2452813ddad5e58fdb1a53b1209b78"
+        }
+      ],
+      "licenseConcluded": "Python-2.0",
+      "licenseDeclared": "Python-2.0",
+      "copyrightText": "Copyright Python Software Foundation and contributors",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:generic/cpython@3.11.14"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-CodexBar-KDE-AppImage",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-CodexBar-KDE"
+    },
+    {
+      "spdxElementId": "SPDXRef-CodexBar-KDE-AppImage",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-PyQt6"
+    },
+    {
+      "spdxElementId": "SPDXRef-CodexBar-KDE-AppImage",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Qt"
+    },
+    {
+      "spdxElementId": "SPDXRef-CodexBar-KDE-AppImage",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-PyQt6-sip"
+    },
+    {
+      "spdxElementId": "SPDXRef-CodexBar-KDE-AppImage",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Python-AppImage"
+    },
+    {
+      "spdxElementId": "SPDXRef-Python-AppImage",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-CPython"
+    }
+  ],
+  "hasExtractedLicensingInfos": [
+    {
+      "licenseId": "LicenseRef-PyQt6-sip",
+      "name": "PyQt6-sip permissive license",
+      "extractedText": "Copyright 2024 Phil Thompson <phil@riverbankcomputing.com>\n\nRedistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:\n\n1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.\n\n2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.\n\nTHIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS AS IS AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+    }
+  ]
+}

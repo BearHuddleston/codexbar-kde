@@ -1,12 +1,13 @@
 [build-system]
-requires = ["setuptools==68.0.0"]
+requires = ["setuptools==82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "codexbar-kde"
 description = "Local PyQt6 dashboard + tray app for AI subscription usage on KDE/Linux, powered by the CodexBar CLI"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["PyQt6>=6.5"]
 dynamic = ["version"]

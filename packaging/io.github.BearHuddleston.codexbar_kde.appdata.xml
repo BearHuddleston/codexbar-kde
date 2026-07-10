@@ -10,7 +10,4 @@
   </description>
   <launchable type="desktop-id">io.github.BearHuddleston.codexbar_kde.desktop</launchable>
   <url type="homepage">https://github.com/BearHuddleston/codexbar-kde</url>
-  <provides>
-    <binary>codexbar-kde</binary>
-  </provides>
 </component>

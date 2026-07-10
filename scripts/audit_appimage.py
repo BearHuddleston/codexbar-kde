@@ -17,38 +17,54 @@ DEFAULT_CEILINGS = {
     "GLIBCXX": "3.4.22",
     "CXXABI": "1.3.11",
 }
-_NAME_RE = re.compile(r"\bName: (GLIBCXX|GLIBC|CXXABI)_(\d+(?:\.\d+)+)\b")
+_NAME_RE = re.compile(r"\bName: (GLIBCXX|GLIBC|CXXABI)_([^\s]+)")
+_VERSION_RE = re.compile(r"\d+(?:\.\d+)+")
 
 
 def version_key(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
 
+def readelf_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(LC_ALL="C", LANG="C")
+    return environment
+
+
 def parse_version_needs(output: str) -> dict[str, set[str]]:
     """Return only requirements from readelf's version-needs section."""
     requirements: dict[str, set[str]] = {kind: set() for kind in KINDS}
-    in_needs = False
+    section: str | None = None
     for line in output.splitlines():
         if line.startswith("Version needs section"):
-            in_needs = True
+            section = "needs"
             continue
         if line.startswith("Version definition section") or line.startswith(
             "Version symbols section"
         ):
-            in_needs = False
+            section = "other"
             continue
-        if not in_needs:
+        matches = _NAME_RE.findall(line)
+        if not matches:
             continue
-        for kind, version in _NAME_RE.findall(line):
+        if section is None:
+            raise ValueError("ABI requirement outside version-needs section")
+        if section != "needs":
+            continue
+        for kind, version in matches:
+            if _VERSION_RE.fullmatch(version) is None:
+                raise ValueError(f"unsupported ABI requirement: {kind}_{version}")
             requirements[kind].add(version)
     return requirements
 
 
 def _readelf_requirements(path: Path) -> dict[str, set[str]] | None:
+    environment = readelf_environment()
     header = subprocess.run(
         ["readelf", "-h", os.fspath(path)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=environment,
         check=False,
     )
     if header.returncode:
@@ -57,6 +73,7 @@ def _readelf_requirements(path: Path) -> dict[str, set[str]] | None:
         ["readelf", "--version-info", "--wide", os.fspath(path)],
         capture_output=True,
         text=True,
+        env=environment,
         check=False,
     )
     if result.returncode:
@@ -90,6 +107,14 @@ def audit_appimage(path: Path) -> tuple[int, dict[str, set[str]]]:
     return elf_count, requirements
 
 
+def validate_audit(elf_count: int, requirements: dict[str, set[str]]) -> None:
+    """Reject incomplete audit results that cannot enforce ABI ceilings."""
+    if elf_count == 0:
+        raise RuntimeError("no ELF files found in AppImage")
+    if not requirements["GLIBC"]:
+        raise RuntimeError("no GLIBC requirements found in AppImage ELFs")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("appimage", type=Path)
@@ -104,7 +129,8 @@ def main() -> int:
 
     try:
         elf_count, requirements = audit_appimage(args.appimage)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        validate_audit(elf_count, requirements)
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
 
     failed = False

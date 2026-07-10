@@ -3,6 +3,7 @@
 # The AppImage bundles Python and PyQt6, but the codexbar CLI remains host-side.
 
 set -euo pipefail
+umask 022
 export LC_ALL=C
 export TZ=UTC
 export PYTHONHASHSEED=0
@@ -77,6 +78,15 @@ SITE_PACKAGES="$APPDIR/opt/python3.11/lib/python3.11/site-packages"
     --no-index --no-deps --no-compile --require-hashes \
     --find-links "$WHEELHOUSE" --target "$SITE_PACKAGES" \
     -r "$REQUIREMENTS"
+rm -rf \
+    "$SITE_PACKAGES/bin" \
+    "$SITE_PACKAGES/build" "$SITE_PACKAGES"/build-*.dist-info \
+    "$SITE_PACKAGES/certifi" "$SITE_PACKAGES"/certifi-*.dist-info \
+    "$SITE_PACKAGES/packaging" "$SITE_PACKAGES"/packaging-*.dist-info \
+    "$SITE_PACKAGES/pip" "$SITE_PACKAGES"/pip-*.dist-info \
+    "$SITE_PACKAGES/pyproject_hooks" "$SITE_PACKAGES"/pyproject_hooks-*.dist-info \
+    "$SITE_PACKAGES/README.txt" \
+    "$SITE_PACKAGES/sitecustomize.py"
 
 rm -rf "$SITE_PACKAGES/codexbar_kde"
 cp -a "$REPO_ROOT/src/codexbar_kde" "$SITE_PACKAGES/"
@@ -88,6 +98,7 @@ rm -f \
     "$APPDIR/usr/share/metainfo/python3.11.14.appdata.xml"
 mkdir -p \
     "$APPDIR/usr/share/applications" \
+    "$APPDIR/usr/share/doc/codexbar-kde" \
     "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
     "$APPDIR/usr/share/licenses/codexbar-kde" \
     "$APPDIR/usr/share/metainfo"
@@ -100,7 +111,20 @@ rm -f "$APPDIR/.DirIcon"
 cp "$REPO_ROOT/assets/codexbar-kde.svg" "$APPDIR/.DirIcon"
 cp "$REPO_ROOT/assets/codexbar-kde.svg" \
     "$APPDIR/usr/share/icons/hicolor/scalable/apps/"
-cp "$REPO_ROOT/LICENSE" "$APPDIR/usr/share/licenses/codexbar-kde/"
+LICENSE_DIR="$APPDIR/usr/share/licenses/codexbar-kde"
+DOC_DIR="$APPDIR/usr/share/doc/codexbar-kde"
+cp "$REPO_ROOT/LICENSE" "$LICENSE_DIR/CodexBar-KDE-MIT.txt"
+cp "$SITE_PACKAGES/PyQt6_Qt6-6.7.1.dist-info/LICENSE" \
+    "$LICENSE_DIR/GPL-3.0-and-LGPL-3.0.txt"
+cp "$SITE_PACKAGES/PyQt6_sip-13.8.0.dist-info/LICENSE" \
+    "$LICENSE_DIR/PyQt6-sip.txt"
+cp "$APPDIR/opt/python3.11/lib/python3.11/LICENSE.txt" \
+    "$LICENSE_DIR/Python-3.11.14.txt"
+cp "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$DOC_DIR/"
+cp "$REPO_ROOT/packaging/CodexBar_KDE-x86_64.spdx.json" "$DOC_DIR/"
+mkdir -p "$REPO_ROOT/dist"
+cp "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$REPO_ROOT/dist/"
+cp "$REPO_ROOT/packaging/CodexBar_KDE-x86_64.spdx.json" "$REPO_ROOT/dist/"
 
 # The Python base uses AppRun as a symlink. Replace it without following it.
 rm "$APPDIR/AppRun"
