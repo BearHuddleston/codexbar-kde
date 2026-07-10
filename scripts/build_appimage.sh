@@ -157,23 +157,8 @@ case "$SOURCE_DATE_EPOCH" in
 esac
 export SOURCE_DATE_EPOCH
 
-python3 - "$APPDIR" "$SOURCE_DATE_EPOCH" <<'PY'
-import os
-import shutil
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-epoch = int(sys.argv[2])
-for cache in root.rglob("__pycache__"):
-    if cache.is_dir():
-        shutil.rmtree(cache)
-for bytecode in list(root.rglob("*.pyc")) + list(root.rglob("*.pyo")):
-    bytecode.unlink(missing_ok=True)
-for path in sorted(root.rglob("*"), reverse=True):
-    os.utime(path, (epoch, epoch), follow_symlinks=False)
-os.utime(root, (epoch, epoch), follow_symlinks=False)
-PY
+python3 "$REPO_ROOT/scripts/normalize_appdir.py" \
+    "$APPDIR" "$SOURCE_DATE_EPOCH"
 
 RUNTIME="$REPO_ROOT/build/runtime-${ARCH}"
 offset=$("$PYTHON_BASE" --appimage-offset)

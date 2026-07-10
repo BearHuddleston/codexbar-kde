@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -21,6 +22,16 @@ def load_abi_auditor() -> ModuleType:
     spec = importlib.util.spec_from_file_location("audit_appimage", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("could not load AppImage ABI auditor")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_appdir_normalizer() -> ModuleType:
+    module_path = ROOT / "scripts" / "normalize_appdir.py"
+    spec = importlib.util.spec_from_file_location("normalize_appdir", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load AppImage normalizer")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -72,6 +83,52 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("\numask 022\n", script)
         self.assertIn("umask 022", workflow)
         self.assertIn("umask 077", workflow)
+
+    def test_appdir_normalization_is_host_mode_and_path_independent(self):
+        module = load_appdir_normalizer()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            roots = [Path(temporary) / name for name in ("local", "ci")]
+            for root, data_mode, executable_mode, record_hash in (
+                (roots[0], 0o600, 0o700, "local-path-hash"),
+                (roots[1], 0o644, 0o755, "ci-path-hash"),
+            ):
+                info = root / "site/pkg-1.0.dist-info"
+                info.mkdir(parents=True)
+                data = root / "data.txt"
+                data.write_text("same data\n", encoding="utf-8")
+                data.chmod(data_mode)
+                executable = root / "AppRun"
+                executable.write_text("#!/bin/sh\n", encoding="utf-8")
+                executable.chmod(executable_mode)
+                (info / "RECORD").write_text(
+                    f"../../bin/tool,sha256={record_hash},123\r\n"
+                    "pkg/module.py,sha256=stable,12\r\n"
+                    "pkg-1.0.dist-info/RECORD,,\r\n",
+                    encoding="utf-8",
+                    newline="",
+                )
+
+            for root in roots:
+                module.normalize_appdir(root, 1_700_000_000)
+
+            def inventory(root: Path) -> list[tuple[str, int, bytes]]:
+                return [
+                    (
+                        path.relative_to(root).as_posix(),
+                        path.stat().st_mode & 0o777,
+                        path.read_bytes() if path.is_file() else b"",
+                    )
+                    for path in sorted(root.rglob("*"))
+                ]
+
+            self.assertEqual(inventory(roots[0]), inventory(roots[1]))
+            self.assertEqual((roots[0] / "data.txt").stat().st_mode & 0o777, 0o644)
+            self.assertEqual((roots[0] / "AppRun").stat().st_mode & 0o777, 0o755)
+            record = (roots[0] / "site/pkg-1.0.dist-info/RECORD").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("../../bin/", record)
 
     def test_appimage_strips_build_only_python_packages(self):
         script = (ROOT / "scripts" / "build_appimage.sh").read_text(encoding="utf-8")
