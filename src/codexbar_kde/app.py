@@ -13,8 +13,17 @@ import threading
 import time
 from typing import Callable, Iterable
 
-from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PyQt6.QtCore import QObject, QSettings, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -43,6 +52,7 @@ from .privacy import redact_credentials, redact_text
 from .reset import (
     CodexAuthError,
     CodexResetError,
+    available_reset_credits,
     credits_from_usage_payload,
     load_codex_auth,
     redeem_reset_credit,
@@ -80,6 +90,12 @@ def clamp_refresh_seconds(value: int) -> int:
 NF_DASHBOARD = "\uf0e4"  # fa-tachometer
 NF_OK = "\uf058"  # fa-check-circle
 NF_WARN = "\uf071"  # fa-exclamation-triangle
+# Severity dots for the tray tooltip. Plasma renders SNI tooltips as plain
+# text (DefaultToolTip.qml uses Text.PlainText), so the only way to carry the
+# Overview's green/amber/red severity signal is color-font glyphs: emoji
+# render in color via Noto Color Emoji even inside plain text. Thresholds
+# match views.color_for_percent / model.severity_for_percent exactly.
+SEVERITY_DOT = {"ok": "\U0001f7e2", "warn": "\U0001f7e1", "critical": "\U0001f534"}
 NF_ACCOUNT = "\uf007"  # fa-user
 NF_PLAN = "\uf132"  # fa-shield
 NF_CLOCK = "\uf017"  # fa-clock-o
@@ -646,6 +662,17 @@ def _provider_count(
     return len(list(providers))
 
 
+def _tightest_window(provider: ProviderUsage) -> WindowUsage | None:
+    return max(provider.windows, key=lambda w: w.used_percent, default=None)
+
+
+def _glance_reset_text(window: WindowUsage) -> str:
+    if window.reset_countdown:
+        return f"resets {window.reset_countdown}"
+    description = _compact_reset_description(window.reset_description)
+    return f"resets {description}" if description else ""
+
+
 def build_tray_tooltip(
     providers: Iterable[ProviderUsage],
     error: str = "",
@@ -655,9 +682,11 @@ def build_tray_tooltip(
 ) -> str:
     """Build the hover text shown by the system tray icon.
 
-    KDE/Qt tray tooltips are plain text, so this uses compact typography,
-    status glyphs, separators, and Unicode progress bars rather than HTML/CSS.
-    Error text is still redacted.
+    A glance card, not a report: one line per provider (its tightest window
+    only) plus the aggregate answers — tightest overall, next reset, banked
+    reset credits. Depth lives one click away in the dashboard. KDE/Qt tray
+    tooltips are plain text, so this uses compact typography, status glyphs,
+    and Unicode meters rather than HTML/CSS. Error text is still redacted.
     """
     provider_list = list(providers)
     count = _provider_count(raw_payload, provider_list)
@@ -669,31 +698,79 @@ def build_tray_tooltip(
         lines.extend(_wrap_indented(first_line, prefix="  ", cont_indent="    "))
         return "\n".join(lines)
 
-    if raw_payload is not None:
-        lines.append("────────────────────────")
-        lines.extend(format_payload_lines(raw_payload, privacy_mode=privacy_mode))
-        lines.append("")
-        lines.append("Click: dashboard  •  Right-click: menu")
-        return "\n".join(lines)
-
     if not provider_list:
         lines.append("No provider data yet")
     else:
         lines.append("────────────────────────")
-        for index, provider in enumerate(provider_list):
-            if index:
-                lines.append("")
-            lines.append(_provider_header(provider))
+        tightest: tuple[ProviderUsage, WindowUsage] | None = None
+        soonest: tuple[dt.datetime, ProviderUsage, WindowUsage] | None = None
+        now = dt.datetime.now(dt.timezone.utc)
+        for provider in provider_list:
             if provider.error:
+                lines.append(nf(NF_WARN, _provider_header(provider)))
                 lines.extend(
                     _wrap_indented(
-                        f"error: {redact_text(provider.error)}",
+                        f"Error: {redact_text(provider.error)}",
                         prefix="  ",
                         cont_indent="    ",
                     )
                 )
-            else:
-                lines.extend(_tray_detail_lines(provider))
+                continue
+            window = _tightest_window(provider)
+            if window is None:
+                lines.append(nf(NF_OK, f"{provider.display_name}  no usage windows"))
+                continue
+            if tightest is None or window.used_percent > tightest[1].used_percent:
+                tightest = (provider, window)
+            for candidate in provider.windows:
+                resets = parse_iso_datetime(candidate.resets_at)
+                if resets is None or resets <= now:
+                    continue
+                if soonest is None or resets < soonest[0]:
+                    soonest = (resets, provider, candidate)
+            left = 100 - window.used_percent
+            severity = severity_for_percent(window.used_percent)
+            glyph = SEVERITY_DOT.get(severity, SEVERITY_DOT["ok"])
+            line = f"{provider.display_name}  {left:.0f}% left {_usage_bar(left)}"
+            credits_text = (
+                f"credits {provider.credits_remaining:g}"
+                if provider.credits_remaining
+                else ""
+            )
+            for extra in (_glance_reset_text(window), credits_text):
+                candidate_line = f"{line} · {extra}" if extra else line
+                if extra and len(nf(glyph, candidate_line)) <= TOOLTIP_WIDTH:
+                    line = candidate_line
+            lines.append(nf(glyph, line))
+
+        footer: list[str] = []
+        if tightest is not None:
+            provider, window = tightest
+            left_text = f"{100 - window.used_percent:.0f}% left"
+            full = nf(
+                NF_PACE,
+                f"Tightest: {provider.display_name} {window.label} · {left_text}",
+            )
+            short = nf(NF_PACE, f"Tightest: {provider.display_name} · {left_text}")
+            footer.append(full if len(full) <= TOOLTIP_WIDTH else short)
+        if soonest is not None:
+            _, provider, window = soonest
+            when = (
+                window.reset_countdown
+                or _compact_reset_description(window.reset_description)
+                or "soon"
+            )
+            full = nf(NF_CLOCK, f"Next reset: {when} · {provider.display_name}")
+            short = nf(NF_CLOCK, f"Next reset: {when}")
+            footer.append(full if len(full) <= TOOLTIP_WIDTH else short)
+        credit_count = len(
+            available_reset_credits(credits_from_usage_payload(raw_payload))
+        )
+        if credit_count:
+            footer.append(nf(NF_RESET, f"Reset credits: {credit_count} available"))
+        if footer:
+            lines.append("────────────────────────")
+            lines.extend(footer)
     lines.append("")
     lines.append("Click: dashboard  •  Right-click: menu")
     redactor = redact_text if privacy_mode else redact_credentials
@@ -785,6 +862,33 @@ class RedeemWorker(QThread):
             self.finished_with_result.emit(False, redact_text(str(exc)))
 
 
+def _glyph_icon(
+    glyph: str, color: str, active_color: str | None = None, px: int = 20
+) -> QIcon:
+    """Render a text glyph into a fixed-size icon so nav labels align on a
+    uniform column regardless of per-glyph advance widths. When
+    ``active_color`` is given it is used for the checked (On) state."""
+
+    def _pixmap(fill: str) -> QPixmap:
+        pixmap = QPixmap(px, px)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = QFont()
+        font.setPixelSize(px - 9 if len(glyph) > 1 else px - 5)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(fill))
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, glyph)
+        painter.end()
+        return pixmap
+
+    icon = QIcon(_pixmap(color))
+    if active_color:
+        icon.addPixmap(_pixmap(active_color), QIcon.Mode.Normal, QIcon.State.On)
+    return icon
+
+
 def make_app_icon() -> QIcon:
     pixmap = QPixmap(128, 128)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -830,6 +934,15 @@ class DashboardWindow(QMainWindow):
     data_changed = pyqtSignal(object, str, object)
 
     VIEWS = ("Overview", "History", "Burn-down", "Details")
+    # collapsed-rail glyphs: plain geometric Unicode, no font dependency
+    VIEW_GLYPHS = {
+        "Overview": "\u25a6",  # ▦
+        "History": "\u25a4",  # ▤
+        "Burn-down": "\u25e2",  # ◢
+        "Details": "{ }",
+    }
+    SIDEBAR_WIDTH = 190
+    RAIL_WIDTH = 52
 
     def __init__(
         self,
@@ -866,26 +979,49 @@ class DashboardWindow(QMainWindow):
         shell.setSpacing(0)
 
         # ---- sidebar -------------------------------------------------
-        sidebar = QFrame()
+        # expanded: brand + labeled nav + status text + Refresh button.
+        # collapsed: 52px glyph rail — same buttons relabeled, status as dot.
+        self.sidebar = QFrame()
+        sidebar = self.sidebar
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(190)
+        sidebar.setFixedWidth(self.SIDEBAR_WIDTH)
         side = QVBoxLayout(sidebar)
+        self._side_layout = side
         side.setContentsMargins(14, 16, 14, 16)
         side.setSpacing(4)
-        brand = QLabel("CodexBar")
-        brand.setStyleSheet(
+        # top row: toggle left of the brand — one shared icon column with
+        # the nav buttons below; subtitle stays under the brand text
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        # 5px lead margin puts the toggle's center on the same x as the nav
+        # icons (expanded: 14+5+15 == 14+10+10; rail: 6+5+15 == rail mid 26)
+        head.setContentsMargins(5, 0, 0, 0)
+        self.nav_toggle = QPushButton("\u2630")
+        self.nav_toggle.setObjectName("NavToggle")
+        self.nav_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav_toggle.setToolTip("Toggle sidebar (Ctrl+B)")
+        self.nav_toggle.setFixedSize(30, 30)
+        self.nav_toggle.clicked.connect(self.toggle_sidebar)
+        head.addWidget(self.nav_toggle)
+        self.brand = QLabel("CodexBar")
+        self.brand.setStyleSheet(
             f"color: {TEXT}; font-size: 16px; font-weight: 800; background: transparent;"
         )
-        side.addWidget(brand)
-        brand_sub = QLabel("usage dashboard")
-        brand_sub.setStyleSheet(
+        head.addWidget(self.brand)
+        head.addStretch(1)
+        side.addLayout(head)
+        self.brand_sub = QLabel("usage dashboard")
+        self.brand_sub.setStyleSheet(
             f"color: {MUTED}; font-size: 11px; background: transparent;"
         )
-        side.addWidget(brand_sub)
+        self.brand_sub.setIndent(38)  # under the brand text, past the icon column
+        side.addWidget(self.brand_sub)
         side.addSpacing(16)
         self.nav_buttons: dict[str, QPushButton] = {}
         for name in self.VIEWS:
             button = QPushButton(name)
+            button.setIcon(_glyph_icon(self.VIEW_GLYPHS[name], MUTED, TEXT))
+            button.setIconSize(QSize(20, 20))
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _, n=name: self.show_view(n))
@@ -899,6 +1035,7 @@ class DashboardWindow(QMainWindow):
             f"color: {MUTED}; font-size: 11px; background: transparent;"
         )
         side.addWidget(self.status_label)
+        side.addSpacing(8)  # breathing room between status and Refresh
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setObjectName("RefreshButton")
         self.refresh_button.clicked.connect(self.refresh_now)
@@ -970,9 +1107,24 @@ class DashboardWindow(QMainWindow):
                 text-align: left;
                 font-size: 13px;
                 font-weight: 600;
+                min-height: 24px;
+                max-height: 24px;
             }}
             QPushButton#NavButton:hover {{ background: #1a1a1f; color: {TEXT}; }}
             QPushButton#NavButton:checked {{ background: #202027; color: {TEXT}; }}
+            QPushButton#NavButton[rail="true"] {{
+                text-align: center;
+                padding: 8px 0;
+            }}
+            QPushButton#NavToggle {{
+                background: transparent;
+                color: {MUTED};
+                border: none;
+                border-radius: 6px;
+                font-size: 15px;
+            }}
+            QPushButton#NavToggle:hover {{ background: #1a1a1f; color: {TEXT}; }}
+            QPushButton#NavToggle:disabled {{ color: #3a3a42; }}
             QPushButton#RefreshButton {{
                 background: #202027;
                 color: {TEXT};
@@ -1006,12 +1158,83 @@ class DashboardWindow(QMainWindow):
 
         self.show_view(self.VIEWS[0])
 
+        # ---- sidebar toggle ------------------------------------------
+        self._sidebar_expanded = True
+        self._status_text, self._status_color = "Not refreshed yet", MUTED
+        self._settings = QSettings("codexbar-kde", "codexbar-kde")
+        toggle = QShortcut(QKeySequence("Ctrl+B"), self)
+        toggle.activated.connect(self.toggle_sidebar)
+        for index, name in enumerate(self.VIEWS, start=1):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{index}"), self)
+            shortcut.activated.connect(lambda n=name: self.show_view(n))
+        self.set_sidebar_visible(
+            self._settings.value("sidebar_visible", True, type=bool)
+        )
+
         self.timer = QTimer(self)
         self.timer.setInterval(self.refresh_seconds * 1000)
         self.timer.timeout.connect(self.refresh_now)
         self.timer.start()
 
     # ---- view API ----------------------------------------------------
+
+    def toggle_sidebar(self) -> None:
+        self.set_sidebar_visible(not self._sidebar_expanded)
+
+    def set_sidebar_visible(self, visible: bool) -> None:
+        """Expanded sidebar (labels) vs collapsed glyph rail — never gone."""
+        self._sidebar_expanded = visible
+        self.sidebar.setFixedWidth(self.SIDEBAR_WIDTH if visible else self.RAIL_WIDTH)
+        margin = 14 if visible else 6
+        self._side_layout.setContentsMargins(margin, 16, margin, 16)
+        # toggle leads the head row; collapsed just hides the brand text and
+        # drops nav labels — the icon column keeps everything aligned
+        self.brand.setVisible(visible)
+        # subtitle stays as a blank spacer on the rail so nav buttons keep
+        # their expanded y-positions (pixel-exact alignment invariant)
+        self.brand_sub.setText("usage dashboard" if visible else "")
+        for name, button in self.nav_buttons.items():
+            button.setText(name if visible else "")
+            button.setToolTip("" if visible else name)
+            style = button.style()
+            if style is not None:
+                button.setProperty("rail", not visible)
+                style.unpolish(button)
+                style.polish(button)
+        self.refresh_button.setText("Refresh" if visible else "\u21bb")
+        self.refresh_button.setToolTip("" if visible else "Refresh")
+        self._settings.setValue("sidebar_visible", visible)
+        self._render_status()
+        self._sync_minimum_size()
+
+    def _sync_minimum_size(self) -> None:
+        """An explicit window minimum overrides the layout-derived one, so
+        retune it whenever sidebar state or content changes — otherwise a
+        narrow window silently clips content (e.g. the credits panel with
+        the sidebar expanded)."""
+        root = self.centralWidget()
+        layout = root.layout() if root else None
+        if layout is None:
+            return
+        layout.activate()
+        self.setMinimumSize(max(860, layout.minimumSize().width()), 560)
+
+    def _set_status(self, text: str, color: str = MUTED) -> None:
+        self._status_text, self._status_color = text, color
+        self._render_status()
+
+    def _render_status(self) -> None:
+        """Full status text expanded; just its colored dot on the rail."""
+        expanded = self._sidebar_expanded
+        self.status_label.setText(self._status_text if expanded else "●")
+        self.status_label.setToolTip("" if expanded else self._status_text)
+        self.status_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft if expanded else Qt.AlignmentFlag.AlignHCenter
+        )
+        self.status_label.setStyleSheet(
+            f"color: {self._status_color}; font-size: 11px; font-weight: 700;"
+            " background: transparent;"
+        )
 
     def view_names(self) -> list[str]:
         return list(self.VIEWS)
@@ -1102,6 +1325,7 @@ class DashboardWindow(QMainWindow):
             credits_from_usage_payload(raw_payload),
             privacy_mode=self.privacy_mode,
         )
+        self._sync_minimum_size()  # button/label widths depend on data
         options = _privacy_window_options(
             providers,
             privacy_mode=self.privacy_mode,
@@ -1116,22 +1340,13 @@ class DashboardWindow(QMainWindow):
             error_count = sum(1 for provider in providers if provider.error)
             ok_count = len(providers) - error_count
             if error_count:
-                self.status_label.setText(
-                    f"● {ok_count} online · {error_count} warning"
-                )
-                self.status_label.setStyleSheet(
-                    "color: #f1c857; font-size: 11px; font-weight: 700; background: transparent;"
+                self._set_status(
+                    f"● {ok_count} online · {error_count} warning", "#f1c857"
                 )
             else:
-                self.status_label.setText(f"● {len(providers)} providers live")
-                self.status_label.setStyleSheet(
-                    "color: #41d17d; font-size: 11px; font-weight: 700; background: transparent;"
-                )
+                self._set_status(f"● {len(providers)} providers live", "#41d17d")
         else:
-            self.status_label.setText("Refresh failed")
-            self.status_label.setStyleSheet(
-                "color: #ff9b9b; font-size: 11px; font-weight: 700; background: transparent;"
-            )
+            self._set_status("Refresh failed", "#ff9b9b")
         self.data_changed.emit(providers, error, raw_payload)
 
     def _accent_for(self, provider_key: str) -> str:
@@ -1179,20 +1394,15 @@ class DashboardWindow(QMainWindow):
     def _update_history_chart(self) -> None:
         selection = self.view_history.current_selection()
         if not selection:
-            self.view_history.set_series([], TEAL, "")
+            self.view_history.set_series([], TEAL)
             return
         provider_key, window_key = selection
         samples = self._history_samples
         series = daily_peaks(
             samples, provider=provider_key, window_key=window_key, days=30
         )
-        active_days = [p for p in series if p.value > 0]
-        if active_days:
-            avg = sum(p.value for p in active_days) / len(active_days)
-            summary = f"Today {series[-1].value:.0f}% peak · 30d avg {avg:.0f}% · {len(active_days)} active days"
-        else:
-            summary = "No recorded days yet"
-        self.view_history.set_series(series, self._accent_for(provider_key), summary)
+        message = "" if any(p.value > 0 for p in series) else "No recorded days yet"
+        self.view_history.set_series(series, self._accent_for(provider_key), message)
 
     def _update_burndown_chart(self) -> None:
         selection = self.view_burndown.current_selection()
@@ -1216,15 +1426,8 @@ class DashboardWindow(QMainWindow):
         burn = burn_down_series(
             samples, window_minutes=window_minutes, resets_at=resets_at
         )
-        if burn.actual:
-            latest = burn.actual[-1]
-            ideal = burn.ideal_remaining_at(latest.ts)
-            delta = latest.value - ideal
-            stance = "ahead of" if delta >= 0 else "behind"
-            summary = f"{latest.value:.0f}% left · ideal {ideal:.0f}% · {abs(delta):.0f}% {stance} steady burn"
-        else:
-            summary = "No samples in the current window yet."
-        self.view_burndown.set_burn_down(burn, self._accent_for(provider_key), summary)
+        message = "" if burn.actual else "No samples in the current window yet."
+        self.view_burndown.set_burn_down(burn, self._accent_for(provider_key), message)
 
     # ---- refresh -----------------------------------------------------
 
@@ -1232,10 +1435,7 @@ class DashboardWindow(QMainWindow):
         if self._shutting_down or self.worker is not None:
             return
         self.refresh_button.setEnabled(False)
-        self.status_label.setText("Refreshing…")
-        self.status_label.setStyleSheet(
-            f"color: {MUTED}; font-size: 11px; background: transparent;"
-        )
+        self._set_status("Refreshing…")
         worker = UsageWorker(
             self.codexbar_bin,
             self,

@@ -139,7 +139,7 @@ class AppTests(unittest.TestCase):
         redeem.assert_called_once_with("tok", "acct", "RateLimitResetCredit_a")
         self.assertEqual(emitted, [(True, "Redeemed — confirmed after status refresh")])
 
-    def test_build_tray_tooltip_shows_expanded_provider_details_without_identity(self):
+    def test_build_tray_tooltip_is_a_glance_card_without_identity(self):
         text = json.dumps(
             [
                 {
@@ -150,7 +150,7 @@ class AppTests(unittest.TestCase):
                         "accountEmail": "person@example.com",
                         "primary": {
                             "usedPercent": 33,
-                            "resetsAt": "2026-07-04T01:00:00Z",
+                            "resetsAt": "2099-07-04T01:00:00Z",
                         },
                         "secondary": {"usedPercent": 12},
                     },
@@ -171,17 +171,21 @@ class AppTests(unittest.TestCase):
         tooltip = build_tray_tooltip(providers)
 
         self.assertIn("CodexBar KDE", tooltip)
-        self.assertIn("Codex (oauth, v0.142.5)", tooltip)
-        self.assertIn("  5h/session: 33% used", tooltip)
-        self.assertIn("resets", tooltip)
-        self.assertIn("  weekly: 12% used", tooltip)
-        self.assertIn("  credits remaining: 4", tooltip)
-        self.assertIn("Claude (oauth)", tooltip)
-        self.assertIn("  5h/session: 0% used", tooltip)
-        self.assertIn("  weekly: 22% used", tooltip)
+        # one glance line per provider: tightest window only, % left + meter
+        self.assertIn("Codex  67% left", tooltip)
+        self.assertIn("Claude  78% left", tooltip)
+        self.assertIn("▰", tooltip)
+        self.assertIn("credits 4", tooltip)
+        # aggregate footer answers
+        self.assertIn("Tightest: Codex 5h/session · 67% left", tooltip)
+        self.assertIn("Next reset:", tooltip)
+        # depth stays in the dashboard: no per-window listing, no identity
+        self.assertNotIn("weekly: 12%", tooltip)
         self.assertNotIn("person@example.com", tooltip)
+        # glanceable: header + 2 providers + footer + hint, nowhere near a report
+        self.assertLess(len(tooltip.splitlines()), 12)
 
-    def test_payload_formatter_is_private_by_default_and_shared_with_tray(self):
+    def test_payload_formatter_is_private_by_default_and_tooltip_never_leaks(self):
         payload = [
             {
                 "provider": "codex",
@@ -198,14 +202,20 @@ class AppTests(unittest.TestCase):
 
         private_text = "\n".join(format_payload_lines(payload))
         revealed_text = "\n".join(format_payload_lines(payload, privacy_mode=False))
-        tooltip = build_tray_tooltip(providers, raw_payload=payload)
 
         self.assertNotIn("person@example.com", private_text)
         self.assertIn("Account: [REDACTED]", private_text)
         self.assertIn("person@example.com", revealed_text)
         self.assertNotIn("REVIEW_PRIVACY_SECRET_123456", private_text)
         self.assertNotIn("REVIEW_PRIVACY_SECRET_123456", revealed_text)
-        self.assertIn(private_text, tooltip)
+
+        # the glance tooltip carries no identity or credentials in either mode
+        for privacy_mode in (True, False):
+            tooltip = build_tray_tooltip(
+                providers, raw_payload=payload, privacy_mode=privacy_mode
+            )
+            self.assertNotIn("person@example.com", tooltip)
+            self.assertNotIn("REVIEW_PRIVACY_SECRET_123456", tooltip)
 
     def test_normalized_summaries_preserve_reset_descriptions(self):
         payload = [
@@ -225,7 +235,9 @@ class AppTests(unittest.TestCase):
         tooltip = build_tray_tooltip(providers)
 
         self.assertIn("Resets4pm(America/Chicago)", summary)
-        self.assertIn("Resets4pm(America/Chicago)", tooltip)
+        # the glance tooltip compacts the same description instead of echoing it
+        self.assertIn("resets 4 pm", tooltip)
+        self.assertNotIn("America/Chicago", tooltip)
 
     def test_normalized_summaries_always_redact_credentials(self):
         secret = "FALLBACK_RESET_SECRET_123456"
@@ -424,16 +436,35 @@ class AppTests(unittest.TestCase):
         tooltip = build_tray_tooltip(providers, raw_payload=payload)
 
         self.assertIn("\uf0e4   CodexBar KDE • 3 providers", tooltip)
-        self.assertIn("\uf058   Codex (oauth, v0.142.5)", tooltip)
-        self.assertIn("\uf017   5h/session: 36% used", tooltip)
-        self.assertIn("36% peak", tooltip)
-        self.assertIn("▰▰▰▱▱▱▱▱▱▱", tooltip)
-        self.assertIn("\uf0e7   30% reserve · expected 66% ✓", tooltip)
-        self.assertIn("\uf09d   Credits: 0 remaining", tooltip)
-        self.assertIn("↳ resets 1 am", tooltip)
+        # glance line: severity dot (Overview thresholds) + tightest window as % left
+        self.assertIn("\U0001f7e2   Codex  64% left ▰▰▰▰▰▰▱▱▱▱", tooltip)
+        # long reset description gets dropped rather than blowing the width
+        self.assertNotIn("tomorrow, 1:03 AM", tooltip)
+        # short compacted descriptions survive, region names never appear
+        self.assertIn(
+            "\U0001f7e2   Claude  100% left ▰▰▰▰▰▰▰▰▰▰ · resets 1 am", tooltip
+        )
         self.assertNotIn("America/Chicago", tooltip)
+        # provider errors keep the header + wrapped Error line
         self.assertIn("\uf071   Gemini (auto)", tooltip)
         self.assertIn("Error: rate limited", tooltip)
+        # aggregate footer names the tightest window fleet-wide
+        self.assertIn("\uf0e7   Tightest: Codex 5h/session · 64% left", tooltip)
+
+    def test_tooltip_severity_dots_track_overview_thresholds(self):
+        from codexbar_kde.app import SEVERITY_DOT
+        from codexbar_kde.views import CRIT, GOOD, WARN, color_for_percent
+
+        expected = {GOOD: "\U0001f7e2", WARN: "\U0001f7e1", CRIT: "\U0001f534"}
+        for used in (0, 69, 70, 89, 90, 100):
+            payload = [
+                {"provider": "codex", "usage": {"primary": {"usedPercent": used}}}
+            ]
+            tooltip = build_tray_tooltip(load_usage_from_json_text(json.dumps(payload)))
+            dot = expected[color_for_percent(used)]
+            self.assertIn(f"{dot}   Codex", tooltip, f"usedPercent={used}")
+            for other in set(SEVERITY_DOT.values()) - {dot}:
+                self.assertNotIn(other, tooltip, f"usedPercent={used}")
 
     def test_build_tray_tooltip_lines_fit_kde_wrap_budget(self):
         payload = [
@@ -471,12 +502,12 @@ class AppTests(unittest.TestCase):
                             {
                                 "title": "Full reset (Weekly + 5 hr)",
                                 "status": "available",
-                                "expires_at": "2026-07-12T02:39:09Z",
+                                "expires_at": "2099-07-12T02:39:09Z",
                             },
                             {
                                 "title": "Full reset (Weekly + 5 hr)",
                                 "status": "available",
-                                "expires_at": "2026-07-18T01:00:00Z",
+                                "expires_at": "2099-07-18T01:00:00Z",
                             },
                         ],
                     },
@@ -548,22 +579,22 @@ class AppTests(unittest.TestCase):
                             {
                                 "title": "Full reset (Weekly + 5 hr)",
                                 "status": "available",
-                                "expires_at": "2026-07-12T02:39:09Z",
+                                "expires_at": "2099-07-12T02:39:09Z",
                             },
                             {
                                 "title": "Full reset (Weekly + 5 hr)",
                                 "status": "available",
-                                "expires_at": "2026-07-18T01:00:00Z",
+                                "expires_at": "2099-07-18T01:00:00Z",
                             },
                             {
                                 "title": "Full reset (Weekly + 5 hr)",
                                 "status": "available",
-                                "expires_at": "2026-07-27T01:00:00Z",
+                                "expires_at": "2099-07-27T01:00:00Z",
                             },
                             {
                                 "title": "Full reset (Weekly + 5 hr)",
                                 "status": "available",
-                                "expires_at": "2026-07-31T01:00:00Z",
+                                "expires_at": "2099-07-31T01:00:00Z",
                             },
                         ],
                     },
@@ -572,14 +603,19 @@ class AppTests(unittest.TestCase):
         ]
         providers = load_usage_from_json_text(json.dumps(payload))
 
+        # payload details (Details view) still group duplicates
+        details = "\n".join(format_payload_lines(payload))
+        self.assertIn("Reset credits: 4 available", details)
+        self.assertIn("Full reset (Weekly + 5 hr) ×4", details)
+        self.assertIn("↳ next expires 2099-07-12", details)
+        self.assertEqual(details.count("Full reset (Weekly + 5 hr)"), 1)
+
+        # the glance tooltip reduces them to a count
         tooltip = build_tray_tooltip(providers, raw_payload=payload)
-
         self.assertIn("Reset credits: 4 available", tooltip)
-        self.assertIn("Full reset (Weekly + 5 hr) ×4", tooltip)
-        self.assertIn("↳ next expires 2026-07-12", tooltip)
-        self.assertEqual(tooltip.count("Full reset (Weekly + 5 hr)"), 1)
+        self.assertNotIn("Full reset (Weekly + 5 hr)", tooltip)
 
-    def test_build_tray_tooltip_compacts_raw_codexbar_payload_to_meaningful_lines(self):
+    def test_format_payload_lines_compacts_raw_codexbar_payload(self):
         payload = [
             {
                 "credits": {
@@ -605,7 +641,7 @@ class AppTests(unittest.TestCase):
                         "credits": [
                             {
                                 "description": "Thanks for using Codex! You've been granted one free rate limit reset.",
-                                "expires_at": "2026-07-12T02:39:09Z",
+                                "expires_at": "2099-07-12T02:39:09Z",
                                 "granted_at": "2026-06-12T02:39:09Z",
                                 "id": "RateLimitResetCredit_example",
                                 "reset_type": "codex_rate_limits",
@@ -654,38 +690,41 @@ class AppTests(unittest.TestCase):
         providers = load_usage_from_json_text(json.dumps(payload))
 
         tooltip = build_tray_tooltip(providers, raw_payload=payload)
-        revealed_tooltip = build_tray_tooltip(
-            providers,
-            raw_payload=payload,
-            privacy_mode=False,
-        )
+        details = "\n".join(format_payload_lines(payload))
+        revealed_details = "\n".join(format_payload_lines(payload, privacy_mode=False))
 
-        self.assertIn("Codex (oauth, v0.142.5)", tooltip)
-        self.assertIn("Account: [REDACTED]", tooltip)
-        self.assertNotIn("person@example.com", tooltip)
-        self.assertIn("Account: person@example.com", revealed_tooltip)
-        self.assertIn("Plan: pro · confidence: exact", tooltip)
-        self.assertIn("5h/session: 1% used", tooltip)
-        self.assertIn("↳ resets tomorrow, 1:03 AM", tooltip)
-        self.assertIn("weekly: 7% used", tooltip)
-        self.assertIn("↳ resets Jul 6 at 10:01 PM", tooltip)
-        self.assertIn("Codex Spark 5-hour: 0% used", tooltip)
-        self.assertIn("↳ resets tomorrow, 4:24 AM", tooltip)
-        self.assertIn("66% reserve · expected 67% ✓", tooltip)
-        self.assertIn("Credits: 0 remaining", tooltip)
+        self.assertIn("Codex (oauth, v0.142.5)", details)
+        self.assertIn("Account: [REDACTED]", details)
+        self.assertNotIn("person@example.com", details)
+        self.assertIn("Account: person@example.com", revealed_details)
+        self.assertIn("Plan: pro · confidence: exact", details)
+        self.assertIn("5h/session: 1% used", details)
+        self.assertIn("↳ resets tomorrow, 1:03 AM", details)
+        self.assertIn("weekly: 7% used", details)
+        self.assertIn("↳ resets Jul 6 at 10:01 PM", details)
+        self.assertIn("Codex Spark 5-hour: 0% used", details)
+        self.assertIn("↳ resets tomorrow, 4:24 AM", details)
+        self.assertIn("66% reserve · expected 67% ✓", details)
+        self.assertIn("Credits: 0 remaining", details)
+        self.assertIn("Reset credits: 1 available", details)
+        self.assertIn("Full reset (Weekly + 5 hr)", details)
+        self.assertIn("↳ expires 2099-07-12", details)
+        self.assertIn("Updated: ", details)
+        self.assertNotIn("Updated: 2026-07-04T04:24:16Z", details)
+        self.assertNotIn("events", details)
+        self.assertNotIn("RateLimitResetCredit_example", details)
+        self.assertNotIn("Thanks for using Codex", details)
+        self.assertNotIn("granted_at", details)
+        self.assertNotIn("reset_type", details)
+        self.assertNotIn("providerID", details)
+        self.assertNotIn("tertiary", details)
+        self.assertNotIn("windowMinutes", details)
+
+        # the glance tooltip stays out of the weeds entirely
+        self.assertIn("Codex  93% left", tooltip)
         self.assertIn("Reset credits: 1 available", tooltip)
-        self.assertIn("Full reset (Weekly + 5 hr)", tooltip)
-        self.assertIn("↳ expires 2026-07-12", tooltip)
-        self.assertIn("Updated: ", tooltip)
-        self.assertNotIn("Updated: 2026-07-04T04:24:16Z", tooltip)
-        self.assertNotIn("events", tooltip)
-        self.assertNotIn("RateLimitResetCredit_example", tooltip)
-        self.assertNotIn("Thanks for using Codex", tooltip)
-        self.assertNotIn("granted_at", tooltip)
-        self.assertNotIn("reset_type", tooltip)
-        self.assertNotIn("providerID", tooltip)
-        self.assertNotIn("tertiary", tooltip)
-        self.assertNotIn("windowMinutes", tooltip)
+        self.assertNotIn("Spark", tooltip)
+        self.assertNotIn("person@example.com", tooltip)
 
 
 if __name__ == "__main__":

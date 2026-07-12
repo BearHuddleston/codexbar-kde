@@ -134,7 +134,24 @@ set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PYTHON="$HERE/opt/python3.11/bin/python3.11"
 SITE="$HERE/opt/python3.11/lib/python3.11/site-packages"
-export SSL_CERT_FILE="$HERE/opt/_internal/certs.pem"
+# The bundled OpenSSL only knows the manylinux cert path, which is not
+# shipped (certifi is stripped for license compliance). Point it at the
+# host CA store instead, honoring any caller-provided override.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for candidate in \
+        /etc/ssl/certs/ca-certificates.crt \
+        /etc/pki/tls/certs/ca-bundle.crt \
+        /etc/ssl/ca-bundle.pem \
+        /etc/ssl/cert.pem; do
+        if [ -r "$candidate" ]; then
+            export SSL_CERT_FILE="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "${SSL_CERT_DIR:-}" ] && [ -d /etc/ssl/certs ]; then
+    export SSL_CERT_DIR=/etc/ssl/certs
+fi
 export PYTHONDONTWRITEBYTECODE=1
 unset PYTHONHOME PYTHONPATH QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH
 export QT_PLUGIN_PATH="$SITE/PyQt6/Qt6/plugins"

@@ -22,11 +22,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from PyQt6.QtCore import QSettings  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from codexbar_kde.app import DashboardWindow  # noqa: E402
 from codexbar_kde.history import HistoryStore  # noqa: E402
 from codexbar_kde.model import normalize_payload  # noqa: E402
+
+# keep QSettings writes out of the developer's real ~/.config
+_settings_tmp = tempfile.TemporaryDirectory()
+for _fmt in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
+    QSettings.setPath(_fmt, QSettings.Scope.UserScope, _settings_tmp.name)
 
 OUT_DIR = REPO_ROOT / "docs" / "screenshots"
 

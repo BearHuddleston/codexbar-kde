@@ -107,9 +107,15 @@ Optional desktop integration (launcher entry + icon):
 ```sh
 install -Dm644 packaging/io.github.BearHuddleston.codexbar_kde.desktop \
   ~/.local/share/applications/io.github.BearHuddleston.codexbar_kde.desktop
-install -Dm644 assets/codexbar-kde.svg ~/.local/share/icons/hicolor/scalable/apps/codexbar-kde.svg
+install -Dm644 assets/codexbar-kde.svg \
+  ~/.local/share/icons/hicolor/scalable/apps/io.github.BearHuddleston.codexbar_kde.svg
 kbuildsycoca6 --noincremental   # KDE: refresh the launcher cache
 ```
+
+> The icon **must** be installed under the reverse-DNS name matching the
+> window's `app_id` (`io.github.BearHuddleston.codexbar_kde`) — otherwise
+> KWin on Wayland can't associate the window with the launcher and shows a
+> generic icon in the titlebar and task manager.
 
 Both options require the [CodexBar CLI](https://codexbar.app) at `/usr/bin/codexbar`
 (or pass `--codexbar-bin PATH`).

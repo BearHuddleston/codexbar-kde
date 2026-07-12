@@ -11,6 +11,16 @@
   <launchable type="desktop-id">io.github.BearHuddleston.codexbar_kde.desktop</launchable>
   <url type="homepage">https://github.com/BearHuddleston/codexbar-kde</url>
   <releases>
+    <release version="0.2.1" date="2026-07-12">
+      <description>
+        <ul>
+          <li>Redesign the dashboard: provider rail, aggregate strip, brand-accented meters, and unified severity colors.</li>
+          <li>Add a collapsible sidebar with an aligned icon rail and keyboard shortcuts.</li>
+          <li>Compact the Codex reset-credit panel and tray tooltip; fix Wayland titlebar icon association.</li>
+          <li>Fix bundled-CA TLS verification for reset redemption inside the AppImage.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-07-10">
       <description>
         <ul>

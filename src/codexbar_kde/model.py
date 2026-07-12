@@ -59,6 +59,7 @@ class WindowUsage:
     reset_countdown: str = ""
     pace_note: str = ""
     window_minutes: int | None = None
+    expected_used_percent: float | None = None
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,15 @@ def _pace_note(pace_window: Any) -> str:
     return " · ".join(bits)
 
 
+def _pace_expected(pace_window: Any) -> float | None:
+    if not isinstance(pace_window, dict):
+        return None
+    expected = _number(pace_window.get("expectedUsedPercent"))
+    if expected is None:
+        return None
+    return max(0.0, min(100.0, expected))
+
+
 def normalize_payload(
     payload: Any, *, now: dt.datetime | None = None
 ) -> list[ProviderUsage]:
@@ -265,6 +275,7 @@ def normalize_payload(
                     reset_countdown=format_reset_countdown(reset, now=now),
                     pace_note=_pace_note(pace.get(key)),
                     window_minutes=_window_minutes(window),
+                    expected_used_percent=_pace_expected(pace.get(key)),
                 )
             )
 
