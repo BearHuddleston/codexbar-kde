@@ -37,3 +37,6 @@ version = { attr = "codexbar_kde.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+codexbar_kde = ["assets/icons/*.svg"]

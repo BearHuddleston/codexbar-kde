@@ -69,13 +69,13 @@ PAYLOAD = [
                         "id": "RateLimitResetCredit_far",
                         "status": "available",
                         "title": "Full reset (Weekly + 5 hr)",
-                        "expires_at": "2026-08-20T01:00:00Z",
+                        "expires_at": "2099-08-20T01:00:00Z",
                     },
                     {
                         "id": "RateLimitResetCredit_soon",
                         "status": "available",
                         "title": "Full reset (Weekly + 5 hr)",
-                        "expires_at": "2026-07-12T02:39:09Z",
+                        "expires_at": "2099-07-12T02:39:09Z",
                     },
                 ],
             },
@@ -118,6 +118,77 @@ class UiTests(unittest.TestCase):
         providers = normalize_payload(PAYLOAD)
         window.set_providers(providers, raw_payload=PAYLOAD)
         return window
+
+    def test_sidebar_toggle_collapses_to_glyph_rail(self):
+        window = self._window()
+        window.show()
+        self.assertTrue(window._sidebar_expanded)
+        self.assertEqual(window.sidebar.width(), window.SIDEBAR_WIDTH)
+        self.assertEqual(window.nav_buttons["Overview"].text(), "Overview")
+        # the toggle lives on the sidebar itself, not in the content header
+        self.assertIs(window.nav_toggle.parentWidget(), window.sidebar)
+
+        window.toggle_sidebar()
+        # collapsed: still visible, narrow, icon-only buttons + name tooltips
+        self.assertTrue(window.sidebar.isVisible())
+        self.assertEqual(window.sidebar.width(), window.RAIL_WIDTH)
+        for name, button in window.nav_buttons.items():
+            self.assertEqual(button.text(), "")
+            self.assertFalse(button.icon().isNull())
+            self.assertEqual(button.toolTip(), name)
+        self.assertEqual(window.refresh_button.text(), "\u21bb")
+        # status reduces to its dot, full text moves to tooltip
+        self.assertEqual(window.status_label.text(), "●")
+        self.assertEqual(window.status_label.toolTip(), window._status_text)
+
+        window.toggle_sidebar()
+        self.assertEqual(window.sidebar.width(), window.SIDEBAR_WIDTH)
+        self.assertEqual(window.nav_buttons["History"].text(), "History")
+        # icons stay on the buttons in both states (shared icon column)
+        self.assertFalse(window.nav_buttons["History"].icon().isNull())
+        self.assertEqual(window.refresh_button.text(), "Refresh")
+        self.assertNotEqual(window.status_label.text(), "●")
+        window.close()
+
+    def test_rail_nav_buttons_align_with_expanded_positions(self):
+        window = self._window()
+        window.show()
+        QCoreApplication.processEvents()
+        expanded = {n: b.geometry().top() for n, b in window.nav_buttons.items()}
+        window.toggle_sidebar()
+        QCoreApplication.processEvents()
+        for name, button in window.nav_buttons.items():
+            self.assertEqual(
+                button.geometry().top(),
+                expanded[name],
+                f"{name} shifted vertically on collapse",
+            )
+        window.toggle_sidebar()  # restore persisted state for other tests
+        window.close()
+
+    def test_expanding_sidebar_raises_window_minimum_to_avoid_clipping(self):
+        window = self._window()
+        window.show()
+        QCoreApplication.processEvents()
+        window.set_sidebar_visible(False)
+        QCoreApplication.processEvents()
+        min_rail = window.minimumWidth()
+        window.resize(min_rail, 700)
+        window.set_sidebar_visible(True)
+        QCoreApplication.processEvents()
+        # minimum tracks the layout: expanded sidebar needs a wider floor,
+        # and the window is pushed up to it so content can't be clipped
+        self.assertGreater(window.minimumWidth(), min_rail)
+        self.assertGreaterEqual(window.width(), window.minimumWidth())
+        window.close()
+
+    def test_sidebar_visibility_persists_via_settings(self):
+        window = self._window()
+        window.set_sidebar_visible(False)
+        self.assertFalse(window._settings.value("sidebar_visible", True, type=bool))
+        window.set_sidebar_visible(True)
+        self.assertTrue(window._settings.value("sidebar_visible", True, type=bool))
+        window.close()
 
     def test_window_offers_multiple_statistic_views(self):
         window = self._window()
@@ -298,6 +369,59 @@ class UiTests(unittest.TestCase):
         self.assertIn("Redeem", label)
         self.assertIn("expires", label.lower())
 
+    def test_reset_panel_groups_duplicate_credit_titles(self):
+        window = self._window()
+        panel = window.view_overview.reset_panel
+
+        panel.set_credits(
+            [
+                {
+                    "id": f"credit_{i}",
+                    "status": "available",
+                    "title": "Full reset (Weekly + 5 hr)",
+                    "expires_at": f"2099-07-{12 + i * 7:02d}T01:00:00Z",
+                }
+                for i in range(3)
+            ]
+        )
+        text = panel.credit_lines.text()
+        lines = text.splitlines()
+        # one line, bare duration run — count lives in the header, the
+        # "expires in" phrase lives on the button, so neither repeats here
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Full reset (Weekly + 5 hr) — ", lines[0])
+        self.assertNotIn("×", text)
+        self.assertNotIn("expires in", text)
+        self.assertEqual(lines[0].count("·"), 2)
+        # durations are NBSP-joined so a wrap moves the whole run to the
+        # next line instead of orphaning the last duration
+        run = lines[0].split("— ")[1]
+        self.assertNotIn(" ", run)
+        self.assertIn("\u00a0·\u00a0", run)
+        # button still carries the phrase + target expiry exactly once
+        self.assertIn("expires in", panel.redeem_button.text())
+        # ungrouped single credit keeps the plain form
+        panel.set_credits(
+            [
+                {
+                    "id": "solo",
+                    "status": "available",
+                    "title": "Full reset (Weekly + 5 hr)",
+                    "expires_at": "2099-07-12T01:00:00Z",
+                }
+            ]
+        )
+        self.assertNotIn("×", panel.credit_lines.text())
+        # credits without expiry fall back to ×N so the size stays visible
+        panel.set_credits(
+            [
+                {"id": "a", "status": "available", "title": "Full reset"},
+                {"id": "b", "status": "available", "title": "Full reset"},
+            ]
+        )
+        self.assertIn("×2", panel.credit_lines.text())
+        window.close()
+
     def test_reset_panel_hides_when_all_available_credits_are_expired(self):
         window = self._window()
         panel = window.view_overview.reset_panel
@@ -335,6 +459,51 @@ class UiTests(unittest.TestCase):
         self.assertFalse(
             window.view_overview.reset_panel.isVisibleTo(window.view_overview)
         )
+
+    def test_reset_panel_shown_only_while_codex_is_selected(self):
+        window = self._window()
+        overview = window.view_overview
+
+        self.assertEqual(overview.selected_provider(), "codex")
+        self.assertTrue(overview.reset_panel.isVisibleTo(overview))
+
+        overview._select("claude")
+        self.assertFalse(overview.reset_panel.isVisibleTo(overview))
+
+        overview._select("codex")
+        self.assertTrue(overview.reset_panel.isVisibleTo(overview))
+
+    def test_switching_providers_leaves_no_orphaned_stage_widgets(self):
+        window = self._window()
+        overview = window.view_overview
+
+        def stage_labels():
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            QApplication.processEvents()
+            return [
+                label.text()
+                for label in overview._stage_host.findChildren(QLabel)
+                if label.text()
+            ]
+
+        overview._select("claude")
+        labels = stage_labels()
+        self.assertNotIn(
+            "Codex", labels, f"codex ghosts after switching away: {labels}"
+        )
+        # exactly one stage header and one primary window row — no stacked ghosts
+        self.assertEqual(labels.count("Claude"), 1)
+        self.assertEqual(labels.count("5h/session"), 1)
+
+        overview._select("codex")
+        labels = stage_labels()
+        self.assertNotIn("Claude", labels)
+        self.assertEqual(labels.count("5h/session"), 1)
+
+        for _ in range(2):
+            overview._select("claude")
+            overview._select("codex")
+        self.assertEqual(len(stage_labels()), len(labels))
 
     def test_usage_success_is_persisted_before_result_signal(self):
         events = []
@@ -468,7 +637,7 @@ class UiTests(unittest.TestCase):
         window.set_providers(normalize_payload(PAYLOAD), raw_payload=PAYLOAD)
 
         self.assertEqual(window._history_samples, [sample])
-        self.assertNotEqual(window.view_history.summary.text(), "No recorded days yet")
+        self.assertNotEqual(window.view_history.stats._cells["today"].text(), "—")
 
     def test_shutdown_waits_for_active_redeem_worker(self):
         window = self._window()
@@ -592,8 +761,10 @@ class UiTests(unittest.TestCase):
             program = f"""
 import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QSettings, QTimer
 from PyQt6.QtWidgets import QApplication
+for fmt in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
+    QSettings.setPath(fmt, QSettings.Scope.UserScope, {td!r})
 from codexbar_kde.app import DashboardWindow
 app = QApplication(['lifecycle-test'])
 window = DashboardWindow(codexbar_bin={str(script)!r}, refresh_seconds=3600)

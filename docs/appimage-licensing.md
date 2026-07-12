@@ -1,7 +1,7 @@
 # AppImage Licensing Review
 
-Date: 2026-07-10
-Scope: the CodexBar KDE 0.2.0 pinned x86_64 AppImage built by `scripts/build_appimage.sh`
+Date: 2026-07-12
+Scope: the CodexBar KDE 0.2.1 pinned x86_64 AppImage built by `scripts/build_appimage.sh`
 
 This is an engineering review, not legal advice. Public distribution still
 requires approval from whoever is responsible for the project's license

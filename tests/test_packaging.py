@@ -172,6 +172,24 @@ class PackagingTests(unittest.TestCase):
         ):
             self.assertIn(f"$SITE_PACKAGES/{name}", script)
 
+    def test_apprun_points_ssl_at_host_ca_store(self):
+        """certifi is stripped, so AppRun must wire the bundled OpenSSL to the
+        host CA store or in-app HTTPS (reset-credit redeem) fails with
+        CERTIFICATE_VERIFY_FAILED."""
+        script = (ROOT / "scripts" / "build_appimage.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn("opt/_internal/certs.pem", script)
+        for path in (
+            "/etc/ssl/certs/ca-certificates.crt",  # Debian/Arch
+            "/etc/pki/tls/certs/ca-bundle.crt",  # Fedora/RHEL
+            "/etc/ssl/ca-bundle.pem",  # openSUSE
+            "/etc/ssl/cert.pem",  # Alpine/FreeBSD-ish
+        ):
+            self.assertIn(path, script)
+        # caller-provided overrides must win
+        self.assertIn('if [ -z "${SSL_CERT_FILE:-}" ]', script)
+        self.assertIn('if [ -z "${SSL_CERT_DIR:-}" ]', script)
+
     def test_abi_parser_reads_needs_but_ignores_library_definitions(self):
         module = load_abi_auditor()
         sample = """
