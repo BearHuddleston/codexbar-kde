@@ -12,13 +12,13 @@ from codexbar_kde.app import (
     format_updated_age,
     load_usage_from_json_text,
     load_usage_payload_from_command,
-    progress_style,
     provider_accent_color,
     provider_summary_lines,
     redact_text,
     RedeemWorker,
     run_test_render,
 )
+from codexbar_kde.views import meter_color
 
 
 class AppTests(unittest.TestCase):
@@ -52,11 +52,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(provider_accent_color("claude"), "#d97757")
         self.assertEqual(color_for_percent(95), "#ff6b6b")
 
-        style = progress_style(42, "#7170ff")
-
-        self.assertIn("#7170ff", style)
-        self.assertIn("border-radius: 3px", style)
-        self.assertIn("max-height: 6px", style)
+        # the shared meter rule: accent while healthy, severity once hot
+        self.assertEqual(meter_color(42, "#7170ff"), "#7170ff")
+        self.assertEqual(meter_color(75, "#7170ff"), "#f1c857")
+        self.assertEqual(meter_color(95, "#7170ff"), "#ff6b6b")
 
     def test_load_usage_from_json_text_returns_normalized_providers(self):
         text = json.dumps(

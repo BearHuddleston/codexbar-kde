@@ -43,6 +43,8 @@ from .history import HistoryStore, Sample, burn_down_series, daily_peaks
 from .model import (
     ProviderUsage,
     WindowUsage as WindowUsage,
+    fleet_next_reset,
+    fleet_tightest,
     normalize_payload,
     parse_iso_datetime,
     provider_display_name,
@@ -59,18 +61,20 @@ from .reset import (
 )
 from .views import (
     BG,
+    GOOD,
     HAIRLINE,
     MUTED,
+    SOFT_CRIT,
     SURFACE,
     TEAL,
     TEXT,
+    WARN,
     BurnDownView,
     DetailsView,
     HistoryView,
     OverviewView,
     color_for_percent as color_for_percent,
     latest_reset_at,
-    progress_style as progress_style,
     provider_accent_color,
     window_options,
 )
@@ -662,10 +666,6 @@ def _provider_count(
     return len(list(providers))
 
 
-def _tightest_window(provider: ProviderUsage) -> WindowUsage | None:
-    return max(provider.windows, key=lambda w: w.used_percent, default=None)
-
-
 def _glance_reset_text(window: WindowUsage) -> str:
     if window.reset_countdown:
         return f"resets {window.reset_countdown}"
@@ -702,9 +702,9 @@ def build_tray_tooltip(
         lines.append("No provider data yet")
     else:
         lines.append("────────────────────────")
-        tightest: tuple[ProviderUsage, WindowUsage] | None = None
-        soonest: tuple[dt.datetime, ProviderUsage, WindowUsage] | None = None
-        now = dt.datetime.now(dt.timezone.utc)
+        ok_providers = [p for p in provider_list if not p.error]
+        tightest = fleet_tightest(ok_providers)
+        soonest = fleet_next_reset(ok_providers)
         for provider in provider_list:
             if provider.error:
                 lines.append(nf(NF_WARN, _provider_header(provider)))
@@ -716,21 +716,12 @@ def build_tray_tooltip(
                     )
                 )
                 continue
-            window = _tightest_window(provider)
+            window = provider.tightest_window
             if window is None:
                 lines.append(nf(NF_OK, f"{provider.display_name}  no usage windows"))
                 continue
-            if tightest is None or window.used_percent > tightest[1].used_percent:
-                tightest = (provider, window)
-            for candidate in provider.windows:
-                resets = parse_iso_datetime(candidate.resets_at)
-                if resets is None or resets <= now:
-                    continue
-                if soonest is None or resets < soonest[0]:
-                    soonest = (resets, provider, candidate)
             left = 100 - window.used_percent
-            severity = severity_for_percent(window.used_percent)
-            glyph = SEVERITY_DOT.get(severity, SEVERITY_DOT["ok"])
+            glyph = SEVERITY_DOT[severity_for_percent(window.used_percent)]
             line = f"{provider.display_name}  {left:.0f}% left {_usage_bar(left)}"
             credits_text = (
                 f"credits {provider.credits_remaining:g}"
@@ -738,9 +729,8 @@ def build_tray_tooltip(
                 else ""
             )
             for extra in (_glance_reset_text(window), credits_text):
-                candidate_line = f"{line} · {extra}" if extra else line
-                if extra and len(nf(glyph, candidate_line)) <= TOOLTIP_WIDTH:
-                    line = candidate_line
+                if extra and len(nf(glyph, f"{line} · {extra}")) <= TOOLTIP_WIDTH:
+                    line = f"{line} · {extra}"
             lines.append(nf(glyph, line))
 
         footer: list[str] = []
@@ -862,8 +852,11 @@ class RedeemWorker(QThread):
             self.finished_with_result.emit(False, redact_text(str(exc)))
 
 
+NAV_ICON_PX = 20
+
+
 def _glyph_icon(
-    glyph: str, color: str, active_color: str | None = None, px: int = 20
+    glyph: str, color: str, active_color: str | None = None, px: int = NAV_ICON_PX
 ) -> QIcon:
     """Render a text glyph into a fixed-size icon so nav labels align on a
     uniform column regardless of per-glyph advance widths. When
@@ -943,6 +936,8 @@ class DashboardWindow(QMainWindow):
     }
     SIDEBAR_WIDTH = 190
     RAIL_WIDTH = 52
+    MIN_WIDTH = 860
+    MIN_HEIGHT = 560
 
     def __init__(
         self,
@@ -969,7 +964,6 @@ class DashboardWindow(QMainWindow):
         self.raw_payload: object | None = None
         self.last_error = ""
         self.setWindowTitle("CodexBar KDE")
-        self.setMinimumSize(860, 560)
         self.setWindowIcon(make_app_icon())
 
         root = QWidget()
@@ -1021,7 +1015,7 @@ class DashboardWindow(QMainWindow):
         for name in self.VIEWS:
             button = QPushButton(name)
             button.setIcon(_glyph_icon(self.VIEW_GLYPHS[name], MUTED, TEXT))
-            button.setIconSize(QSize(20, 20))
+            button.setIconSize(QSize(NAV_ICON_PX, NAV_ICON_PX))
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _, n=name: self.show_view(n))
@@ -1029,11 +1023,8 @@ class DashboardWindow(QMainWindow):
             side.addWidget(button)
             self.nav_buttons[name] = button
         side.addStretch(1)
-        self.status_label = QLabel("Not refreshed yet")
+        self.status_label = QLabel()  # rendered by _render_status
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet(
-            f"color: {MUTED}; font-size: 11px; background: transparent;"
-        )
         side.addWidget(self.status_label)
         side.addSpacing(8)  # breathing room between status and Refresh
         self.refresh_button = QPushButton("Refresh")
@@ -1124,7 +1115,6 @@ class DashboardWindow(QMainWindow):
                 font-size: 15px;
             }}
             QPushButton#NavToggle:hover {{ background: #1a1a1f; color: {TEXT}; }}
-            QPushButton#NavToggle:disabled {{ color: #3a3a42; }}
             QPushButton#RefreshButton {{
                 background: #202027;
                 color: {TEXT};
@@ -1217,7 +1207,9 @@ class DashboardWindow(QMainWindow):
         if layout is None:
             return
         layout.activate()
-        self.setMinimumSize(max(860, layout.minimumSize().width()), 560)
+        width = max(self.MIN_WIDTH, layout.minimumSize().width())
+        if width != self.minimumWidth():
+            self.setMinimumSize(width, self.MIN_HEIGHT)
 
     def _set_status(self, text: str, color: str = MUTED) -> None:
         self._status_text, self._status_color = text, color
@@ -1325,7 +1317,6 @@ class DashboardWindow(QMainWindow):
             credits_from_usage_payload(raw_payload),
             privacy_mode=self.privacy_mode,
         )
-        self._sync_minimum_size()  # button/label widths depend on data
         options = _privacy_window_options(
             providers,
             privacy_mode=self.privacy_mode,
@@ -1335,18 +1326,17 @@ class DashboardWindow(QMainWindow):
         self._update_history_chart()
         self._update_burndown_chart()
         self._render_details()
+        self._sync_minimum_size()  # after all views update: widths depend on data
 
         if providers:
             error_count = sum(1 for provider in providers if provider.error)
             ok_count = len(providers) - error_count
             if error_count:
-                self._set_status(
-                    f"● {ok_count} online · {error_count} warning", "#f1c857"
-                )
+                self._set_status(f"● {ok_count} online · {error_count} warning", WARN)
             else:
-                self._set_status(f"● {len(providers)} providers live", "#41d17d")
+                self._set_status(f"● {len(providers)} providers live", GOOD)
         else:
-            self._set_status("Refresh failed", "#ff9b9b")
+            self._set_status("Refresh failed", SOFT_CRIT)
         self.data_changed.emit(providers, error, raw_payload)
 
     def _accent_for(self, provider_key: str) -> str:

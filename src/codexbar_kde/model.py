@@ -4,7 +4,7 @@ import datetime as dt
 import math
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from .privacy import redact_text, sanitize_structure
 
@@ -74,10 +74,13 @@ class ProviderUsage:
     error: str = ""
 
     @property
+    def tightest_window(self) -> WindowUsage | None:
+        return max(self.windows, key=lambda w: w.used_percent, default=None)
+
+    @property
     def max_used_percent(self) -> float:
-        if not self.windows:
-            return 0.0
-        return max(w.used_percent for w in self.windows)
+        window = self.tightest_window
+        return window.used_percent if window else 0.0
 
 
 def provider_display_name(provider: str | None) -> str:
@@ -111,6 +114,36 @@ def parse_iso_datetime(value: str | None) -> dt.datetime | None:
         return parsed.astimezone(dt.timezone.utc)
     except (ValueError, OverflowError):
         return None
+
+
+def fleet_tightest(
+    providers: Iterable[ProviderUsage],
+) -> tuple[ProviderUsage, WindowUsage] | None:
+    """The fleet-wide window closest to exhaustion (highest used percent)."""
+    tightest: tuple[ProviderUsage, WindowUsage] | None = None
+    for provider in providers:
+        window = provider.tightest_window
+        if window is not None and (
+            tightest is None or window.used_percent > tightest[1].used_percent
+        ):
+            tightest = (provider, window)
+    return tightest
+
+
+def fleet_next_reset(
+    providers: Iterable[ProviderUsage], *, now: dt.datetime | None = None
+) -> tuple[dt.datetime, ProviderUsage, WindowUsage] | None:
+    """The soonest future window reset across the fleet."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    soonest: tuple[dt.datetime, ProviderUsage, WindowUsage] | None = None
+    for provider in providers:
+        for window in provider.windows:
+            resets = parse_iso_datetime(window.resets_at)
+            if resets is None or resets <= now:
+                continue
+            if soonest is None or resets < soonest[0]:
+                soonest = (resets, provider, window)
+    return soonest
 
 
 def format_reset_countdown(value: str | None, *, now: dt.datetime | None = None) -> str:

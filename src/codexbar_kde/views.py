@@ -8,6 +8,7 @@ rather than heavy card panels.
 from __future__ import annotations
 
 import datetime as dt
+from functools import lru_cache
 from pathlib import Path
 
 from PyQt6.QtCore import QRectF, Qt, QPointF, pyqtSignal
@@ -37,6 +38,8 @@ from .history import BurnDown, SeriesPoint
 from .model import (
     ProviderUsage,
     WindowUsage,
+    fleet_next_reset,
+    fleet_tightest,
     parse_iso_datetime,
     severity_for_percent,
 )
@@ -55,6 +58,10 @@ IDEAL = "#5c5c66"
 GOOD = "#41d17d"
 WARN = "#f1c857"
 CRIT = "#ff6b6b"
+SOFT_GOOD = "#8fd3a8"
+SOFT_CRIT = "#ff9b9b"
+TRACK = "#26262c"
+_TRACK_COLOR = QColor(TRACK)
 
 PROVIDER_ACCENTS = {
     "codex": "#7170ff",
@@ -157,30 +164,40 @@ def meter_color(percent_used: float, accent: str | None = None) -> str:
     return color_for_percent(percent_used)
 
 
-def progress_style(percent: float, accent: str | None = None) -> str:
-    """Thin CodexBar-style meter: 6px track, flat chunk in severity color."""
-    color = meter_color(percent, accent)
-    return f"""
-        QProgressBar {{
-            border: none;
-            border-radius: 3px;
-            background: #26262c;
-            max-height: 6px;
-            min-height: 6px;
-        }}
-        QProgressBar::chunk {{
-            border-radius: 3px;
-            background: {color};
-        }}
-    """
-
-
 def hairline() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
     line.setFixedHeight(1)
     line.setStyleSheet(f"background: {HAIRLINE}; border: none;")
     return line
+
+
+@lru_cache(maxsize=1)
+def _row_metrics() -> QFontMetrics:
+    """Metrics matching _label(size=12)'s rendered font — a bare QLabel's
+    font() is unpolished (the stylesheet's px size not yet applied), so
+    measure a QFont with the pixel size set explicitly instead."""
+    font = QFont()
+    font.setPixelSize(12)
+    return QFontMetrics(font)
+
+
+def _clear_layout(layout: QLayout, *, keep_tail: int = 0) -> None:
+    """Delete every widget, recursing into nested layouts — items added with
+    addLayout() keep their child widgets parented to the host, so a
+    widget-only sweep leaves them painting over the rebuilt content.
+    ``keep_tail`` preserves trailing items (e.g. a stretch)."""
+    while layout.count() > keep_tail:
+        item = layout.takeAt(0)
+        if item is None:
+            continue
+        widget = item.widget()
+        child = item.layout()
+        if widget is not None:
+            widget.deleteLater()
+        elif child is not None:
+            _clear_layout(child)
+            child.deleteLater()
 
 
 def _label(
@@ -419,6 +436,7 @@ class SegmentBar(QWidget):
         self.used_percent = 0.0
         self.expected_used: float | None = None
         self.accent: str | None = None
+        self._fill = QColor(meter_color(0.0))
         self.setFixedHeight(14)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -431,6 +449,7 @@ class SegmentBar(QWidget):
         self.used_percent = max(0.0, min(100.0, used_percent))
         self.expected_used = expected_used
         self.accent = accent
+        self._fill = QColor(meter_color(self.used_percent, accent))
         if expected_used is not None:
             self.setToolTip(
                 f"Hollow block: expected {expected_used:g}% used at linear pace"
@@ -450,12 +469,10 @@ class SegmentBar(QWidget):
             block_w = (width - gap * (count - 1)) / count
         remaining = 100.0 - self.used_percent
         lit = round(remaining / 100.0 * count)
-        fill = QColor(meter_color(self.used_percent, self.accent))
-        track = QColor("#26262c")
         painter.setPen(Qt.PenStyle.NoPen)
         for index in range(count):
             x = index * (block_w + gap)
-            painter.setBrush(fill if index < lit else track)
+            painter.setBrush(self._fill if index < lit else _TRACK_COLOR)
             painter.drawRect(QRectF(x, 0, block_w, height))
         if self.expected_used is not None:
             expected_left = 100.0 - self.expected_used
@@ -474,21 +491,23 @@ class SparkBar(QWidget):
         super().__init__(parent)
         self.used_percent = 0.0
         self.accent: str | None = None
+        self._fill = QColor(meter_color(0.0))
         self.setFixedHeight(3)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_value(self, used_percent: float, accent: str | None = None) -> None:
         self.used_percent = max(0.0, min(100.0, used_percent))
         self.accent = accent
+        self._fill = QColor(meter_color(self.used_percent, accent))
         self.update()
 
     def paintEvent(self, a0) -> None:  # noqa: N802 (Qt override)
         painter = QPainter(self)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#26262c"))
+        painter.setBrush(_TRACK_COLOR)
         painter.drawRoundedRect(QRectF(0, 0, self.width(), 3), 1.5, 1.5)
         remaining = (100.0 - self.used_percent) / 100.0 * self.width()
-        painter.setBrush(QColor(meter_color(self.used_percent, self.accent)))
+        painter.setBrush(self._fill)
         painter.drawRoundedRect(QRectF(0, 0, remaining, 3), 1.5, 1.5)
         painter.end()
 
@@ -499,6 +518,9 @@ class SparkBar(QWidget):
 class StatStrip(QFrame):
     """Row of caption-over-value stat cells under a hairline — the signature
     header used by every view."""
+
+    VALUE_SIZE = 15
+    VALUE_WEIGHT = 700
 
     def __init__(
         self, cells: list[tuple[str, str]], parent: QWidget | None = None
@@ -519,7 +541,7 @@ class StatStrip(QFrame):
             cell = QVBoxLayout()
             cell.setSpacing(1)
             cell.addWidget(_caption(caption))
-            value = _label("—", size=15, weight=700)
+            value = _label("—", size=self.VALUE_SIZE, weight=self.VALUE_WEIGHT)
             cell.addWidget(value)
             self._cells[key] = value
             layout.addLayout(cell)
@@ -527,7 +549,8 @@ class StatStrip(QFrame):
     def set(self, key: str, text: str, color: str = TEXT) -> None:
         self._cells[key].setText(text)
         self._cells[key].setStyleSheet(
-            f"color: {color}; font-size: 15px; font-weight: 700; background: transparent;"
+            f"color: {color}; font-size: {self.VALUE_SIZE}px;"
+            f" font-weight: {self.VALUE_WEIGHT}; background: transparent;"
         )
 
 
@@ -555,11 +578,7 @@ class AggregateStrip(StatStrip):
         live = [p for p in providers if not p.error and p.windows]
         errors = sum(1 for p in providers if p.error)
 
-        tightest: tuple[ProviderUsage, WindowUsage] | None = None
-        for provider in live:
-            for window in provider.windows:
-                if tightest is None or window.used_percent > tightest[1].used_percent:
-                    tightest = (provider, window)
+        tightest = fleet_tightest(live)
         if tightest:
             provider, window = tightest
             left = 100 - window.used_percent
@@ -572,15 +591,7 @@ class AggregateStrip(StatStrip):
         else:
             self.set("tightest", "—", MUTED)
 
-        soonest: tuple[dt.datetime, ProviderUsage, WindowUsage] | None = None
-        now = dt.datetime.now(dt.timezone.utc)
-        for provider in live:
-            for window in provider.windows:
-                resets = parse_iso_datetime(window.resets_at)
-                if resets is None or resets <= now:
-                    continue
-                if soonest is None or resets < soonest[0]:
-                    soonest = (resets, provider, window)
+        soonest = fleet_next_reset(live)
         if soonest:
             _, provider, window = soonest
             when = window.reset_countdown or window.reset_description or "soon"
@@ -623,7 +634,7 @@ class ProviderRailItem(QFrame):
         top.addLayout(names)
         top.addStretch(1)
         if provider.error:
-            top.addWidget(_label("!", size=13, weight=700, color="#f1c857"))
+            top.addWidget(_label("!", size=13, weight=700, color=WARN))
         elif provider.windows:
             peak = provider.max_used_percent
             top.addWidget(
@@ -646,7 +657,7 @@ class ProviderRailItem(QFrame):
     def _sub_text(provider: ProviderUsage, safe_text) -> str:
         if provider.error:
             return "error"
-        tightest = max(provider.windows, key=lambda w: w.used_percent, default=None)
+        tightest = provider.tightest_window
         if tightest is None:
             return ""
         bits = [safe_text(tightest.label)]
@@ -813,7 +824,7 @@ class ResetCreditPanel(QFrame):
 
     def show_result(self, message: str, *, ok: bool) -> None:
         self._status_message = message
-        color = "#8fd3a8" if ok else "#ff9b9b"
+        color = SOFT_GOOD if ok else SOFT_CRIT
         self.status_line.setStyleSheet(
             f"color: {color}; font-size: 11px; background: transparent;"
         )
@@ -878,7 +889,6 @@ class OverviewView(QWidget):
         self.providers: list[ProviderUsage] = []
         self._rail_items: dict[str, ProviderRailItem] = {}
         self._selected = ""
-        self._credit_count = 0
         self._summary_parts: list[str] = []
         self._privacy_mode = True
 
@@ -895,13 +905,12 @@ class OverviewView(QWidget):
         self, credits: list[dict], *, privacy_mode: bool = True
     ) -> None:
         self.reset_panel.set_credits(credits, privacy_mode=privacy_mode)
-        self._credit_count = self.reset_panel.credit_count()
         self._sync_reset_panel_visibility()
 
     def _sync_reset_panel_visibility(self) -> None:
         """The credits are Codex rate-limit resets — only show them on Codex."""
         self.reset_panel.setVisible(
-            self._credit_count > 0 and self._selected == "codex"
+            self.reset_panel.credit_count() > 0 and self._selected == "codex"
         )
 
     def set_providers(
@@ -931,25 +940,8 @@ class OverviewView(QWidget):
         self._sync_reset_panel_visibility()
         self._rebuild_stage()
 
-    @classmethod
-    def _clear_layout(cls, layout: QLayout) -> None:
-        """Delete every widget, recursing into nested layouts — items added
-        with addLayout() keep their child widgets parented to the host, so a
-        widget-only sweep leaves them painting over the rebuilt content."""
-        while layout.count():
-            item = layout.takeAt(0)
-            if item is None:
-                continue
-            widget = item.widget()
-            child = item.layout()
-            if widget is not None:
-                widget.deleteLater()
-            elif child is not None:
-                cls._clear_layout(child)
-                child.deleteLater()
-
     def _rebuild_rail(self) -> None:
-        self._clear_layout(self._rail_layout)
+        _clear_layout(self._rail_layout)
         self._rail_items = {}
         if not self.providers:
             self._rail_layout.addWidget(
@@ -968,7 +960,7 @@ class OverviewView(QWidget):
         self._rail_layout.addStretch(1)
 
     def _rebuild_stage(self) -> None:
-        self._clear_layout(self._stage_layout)
+        _clear_layout(self._stage_layout)
         provider = next(
             (p for p in self.providers if p.provider == self._selected), None
         )
@@ -1017,7 +1009,7 @@ class OverviewView(QWidget):
 
         if provider.error:
             error = _label(
-                f"Error: {self._safe_text(provider.error)}", size=12, color="#ff9b9b"
+                f"Error: {self._safe_text(provider.error)}", size=12, color=SOFT_CRIT
             )
             error.setWordWrap(True)
             self._stage_layout.addWidget(error)
@@ -1045,7 +1037,7 @@ class OverviewView(QWidget):
         top.addStretch(1)
         # fixed-width columns so the dot separator and both texts line up
         # across rows regardless of "2h 2m" vs "6d 2h" string widths
-        metrics = QFontMetrics(_label("", size=12).font())
+        metrics = _row_metrics()
         left = 100 - window.used_percent
         left_label = _label(
             f"{left:.0f}% left",
@@ -1261,12 +1253,9 @@ class DetailsView(QWidget):
 
     def set_text(self, value: str) -> None:
         self._plain = value
-        # Rebuild cards: one per provider block (blocks separated by blank lines).
-        while self._cards_layout.count() > 1:
-            item = self._cards_layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.deleteLater()
+        # Rebuild cards: one per provider block (blocks separated by blank
+        # lines); keep the trailing stretch.
+        _clear_layout(self._cards_layout, keep_tail=1)
         blocks = [b for b in value.split("\n\n") if b.strip()]
         for index, block in enumerate(blocks):
             head, *rest = block.splitlines()

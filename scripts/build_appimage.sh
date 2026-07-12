@@ -148,6 +148,9 @@ if [ -z "${SSL_CERT_FILE:-}" ]; then
             break
         fi
     done
+    if [ -z "${SSL_CERT_FILE:-}" ]; then
+        echo "codexbar-kde: no host CA bundle found; HTTPS may fail" >&2
+    fi
 fi
 if [ -z "${SSL_CERT_DIR:-}" ] && [ -d /etc/ssl/certs ]; then
     export SSL_CERT_DIR=/etc/ssl/certs
