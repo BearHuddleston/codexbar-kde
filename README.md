@@ -28,15 +28,17 @@ All providers together, clear meters, history charts — no fragmented single-pr
 *Rendered with synthetic demo data via [`scripts/make_screenshots.py`](scripts/make_screenshots.py).*
 
 ### Overview
-Per-provider sections in CodexBar menu style: `N% left`, reset countdowns, thin
-provider-accent meters, pace notes, credits — plus a **Codex reset credits** panel
+Provider rail on the left (brand icon, tightest window, spark meter), fleet
+aggregate strip on top, and a per-window stage with segmented block meters —
+`N% left`, reset countdowns, pace markers. Codex adds a **reset credits** panel
 with a one-click *Redeem next* button for the credit closest to expiring.
 
 ![Overview view](docs/screenshots/overview.png)
 
 ### History
-Daily peak-usage bar chart (last 30 days) per provider window, teal/accent bars
-like the CodexBar History widget.
+Daily peak-usage bar chart (last 30 days) per provider window — each day's bar
+takes the provider accent while healthy and amber/red once hot, so bad days
+stand out at a glance.
 
 ![History view](docs/screenshots/history.png)
 
@@ -56,22 +58,23 @@ Monospace compact dump of every meaningful `codexbar usage` field.
 ## Features
 
 - **Flat dark CodexBar-inspired shell** — sidebar navigation, hairline separators,
-  thin 6px meters, no heavy cards (codexbar.app design language).
-- **Four statistic views** (Overview / History / Burn-down / Details), each also
-  reachable from the tray *Views* submenu.
-- **System tray icon** with a rich plain-text tooltip:
-  - Nerd Font / Font Awesome glyphs when available locally (dashboard, check,
-    warning, user, shield, clock/calendar, bolt, credit-card, refresh).
-  - Provider count, divider line, peak usage, unicode usage bars, reset
-    descriptions, pace, credits, and provider errors.
-  - Identical reset credits grouped into one line
-    (`Full reset (Weekly + 5 hr) ×4 · next expires …`).
-  - `Updated:` shown as a relative age (`just now`, `25m ago`) instead of a raw
-    ISO timestamp.
-  - Low-value raw JSON omitted: empty arrays, duplicate provider IDs,
-    reset-credit IDs, boilerplate descriptions, grant dates, reset types, null
-    tertiary windows, raw window-minute values.
-  - Click the tray icon to open the dashboard; right-click for Open / Refresh / Quit.
+  segmented block meters, no heavy cards (codexbar.app design language).
+- **Collapsible sidebar** — `Ctrl+B` (or the ☰ button) collapses it to a 52px
+  icon rail; the state persists across restarts.
+- **Four statistic views** (Overview / History / Burn-down / Details) on
+  `Ctrl+1`–`Ctrl+4`, each also reachable from the tray *Views* submenu.
+- **One color system everywhere** — provider brand accents while a meter is
+  healthy (<70% used), amber at 70–89%, red at 90%+; the same rule drives the
+  Overview meters, History bars, Burn-down line, and tray severity dots.
+- **System tray icon** with a glance-card tooltip:
+  - One line per provider: severity dot (🟢🟡🔴), `N% left`, a unicode meter,
+    and the next reset — plus a footer with the fleet's tightest window, next
+    reset, and available Codex reset credits.
+  - Severity dots track the exact Overview thresholds; KDE tray tooltips are
+    plain text, so color arrives via color-emoji glyphs (see
+    [Notes on tray tooltips](#notes-on-tray-tooltips)).
+  - Click the tray icon to open the dashboard; right-click for Open / Refresh /
+    Views / Quit.
 - **Usage history** sampled on every refresh into
   `~/.local/state/codexbar-kde/history.jsonl` (JSONL, pruned to 60 days, corrupt
   lines skipped). Charts fill in as history accrues.
@@ -168,15 +171,20 @@ Useful flags:
 
 ## Notes on tray tooltips
 
-KDE/QSystemTrayIcon tooltips are plain text, not full custom HTML/CSS popovers.
-Glyph icons rely on a locally installed Nerd Font fallback (verified here with
-`FantasqueSansM Nerd Font` via fontconfig for the codepoints used); without one,
-the glyphs degrade to unknown-character boxes but the text stays readable.
+KDE/QSystemTrayIcon tooltips are plain text, not full custom HTML/CSS popovers,
+so per-character coloring is impossible. Severity therefore rides on color-font
+emoji dots (🟢🟡🔴), which render in color anywhere a color emoji font (e.g.
+Noto Color Emoji) is installed. The remaining glyph icons rely on a locally
+installed Nerd Font fallback; without one they degrade to unknown-character
+boxes but the text stays readable.
 
 ## Development
 
 ```sh
-# Run tests (stdlib unittest; offscreen so no display is needed)
+# Run tests (offscreen so no display is needed). Prefer pytest locally:
+# tests/conftest.py sandboxes QSettings so runs never touch ~/.config.
+QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m pytest tests/ -q
+# The suite is also plain stdlib unittest (what CI runs):
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m unittest discover -s tests -v
 
 # Regenerate the README screenshots (synthetic data only — nothing personal leaks)
@@ -222,5 +230,7 @@ src/codexbar_kde/
   views.py    # Overview / History / Burn-down / Details widgets + theme
   history.py  # JSONL history store, daily peaks, burn-down series
   reset.py    # Codex reset-credit listing and redeem call
+  assets/     # vendored provider icons (see THIRD_PARTY_NOTICES.md)
 tests/        # unittest suite (model, history, reset, app, UI smoke)
+              # conftest.py sandboxes QSettings for local pytest runs
 ```
